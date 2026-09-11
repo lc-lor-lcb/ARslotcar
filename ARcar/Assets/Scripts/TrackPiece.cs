@@ -42,6 +42,10 @@ namespace ARSlotcar
     {
         [SerializeField] private TrackConfig config;
         [SerializeField] private Material ghostMaterial;
+        [Tooltip("コース内に1個限定のスタートパーツかどうか(走行経路の起点として使われる)")]
+        [SerializeField] private bool isStartPiece;
+
+        public bool IsStartPiece => isStartPiece;
 
         private Grabbable grabbable;
         private TrackConnector[] connectors;
@@ -84,6 +88,7 @@ namespace ARSlotcar
             {
                 case PointerEventType.Select:
                     isHeld = true;
+                    DisconnectAll(); // 掴んだ時点でコースから切り離す(繋がったまま動かせないように)
                     break;
 
                 case PointerEventType.Unselect:
@@ -92,6 +97,7 @@ namespace ARSlotcar
                     {
                         var (rotation, position) = ComputeSnapPose(candidate.My, candidate.Target);
                         transform.SetPositionAndRotation(position, rotation);
+                        TrackConnector.Connect(candidate.My, candidate.Target);
                     }
                     HideGhost();
                     break;
@@ -132,6 +138,7 @@ namespace ARSlotcar
                     if (other == myConnector) continue;
                     if (other.OwnerPiece == this) continue;               // 自分自身のパーツは除外
                     if (other.Type != myConnector.Type) continue;         // 種類が違えば接続不可
+                    if (other.IsConnected) continue;                      // 既に他のパーツと接続済みなら対象外
 
                     float dist = Vector3.Distance(myConnector.transform.position, other.transform.position);
                     if (dist > config.SnapRadius) continue;
@@ -186,6 +193,30 @@ namespace ARSlotcar
             Vector3 finalPosition = target.transform.position - finalRotation * localOffset;
 
             return (finalRotation, finalPosition);
+        }
+
+        /// <summary>このピースが持つ全コネクタの接続を解除する(掴んだ時に呼ぶ)</summary>
+        private void DisconnectAll()
+        {
+            if (connectors == null) return;
+            foreach (var c in connectors)
+            {
+                c.Disconnect();
+            }
+        }
+
+        /// <summary>このピースが持つコネクタ一覧(経路構築などで参照用)</summary>
+        public TrackConnector[] GetConnectors() => connectors;
+
+        /// <summary>2コネクタ構成のピースで、一方を指定してもう一方を取得する(経路構築用)</summary>
+        public TrackConnector GetOtherConnector(TrackConnector one)
+        {
+            if (connectors == null) return null;
+            foreach (var c in connectors)
+            {
+                if (c != one) return c;
+            }
+            return null;
         }
 
         // ---- ここからゴースト(半透明プレビュー)関連 ----

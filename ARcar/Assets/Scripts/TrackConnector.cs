@@ -19,6 +19,27 @@ namespace ARSlotcar
         /// <summary>このコネクタを持つ親のTrackPiece</summary>
         public TrackPiece OwnerPiece { get; private set; }
 
+        /// <summary>現在接続されている相手のコネクタ(未接続ならnull)</summary>
+        public TrackConnector ConnectedTo { get; private set; }
+
+        public bool IsConnected => ConnectedTo != null;
+
+        /// <summary>2つのコネクタを相互に接続状態にする</summary>
+        public static void Connect(TrackConnector a, TrackConnector b)
+        {
+            a.ConnectedTo = b;
+            b.ConnectedTo = a;
+        }
+
+        /// <summary>接続を解除する(相手側の接続情報も一緒に解除する)</summary>
+        public void Disconnect()
+        {
+            if (ConnectedTo == null) return;
+            var other = ConnectedTo;
+            ConnectedTo = null;
+            other.ConnectedTo = null;
+        }
+
         private void Awake()
         {
             OwnerPiece = GetComponentInParent<TrackPiece>();
