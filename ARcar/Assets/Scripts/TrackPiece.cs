@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using Oculus.Interaction;
 
@@ -156,14 +157,15 @@ namespace ARSlotcar
         }
 
         /// <summary>
-        /// 指定した1つの自分のコネクタについてだけ、検知半径内・向きがほぼ逆・同じType・
-        /// 未接続、という条件を満たす最も近い相手コネクタを探す。
+        /// 指定した1つの自分のコネクタについて、検知半径内・向きがほぼ逆・同じType・未接続、
+        /// という条件を満たす相手コネクタを近い順に集め、実際にそこへスナップした場合に
+        /// 他パーツと干渉(めり込み)しないものが見つかるまで順に試す。
         /// </summary>
         private bool TryFindCandidateFor(TrackConnector myConnector, out TrackConnector best)
         {
             best = null;
-            float bestDist = config.SnapRadius;
 
+            var candidates = new List<TrackConnector>();
             foreach (var other in TrackConnector.All)
             {
                 if (other == myConnector) continue;
@@ -172,16 +174,63 @@ namespace ARSlotcar
                 if (other.IsConnected) continue;                      // 既に他のパーツと接続済みなら対象外
 
                 float dist = Vector3.Distance(myConnector.transform.position, other.transform.position);
-                if (dist > bestDist) continue;
+                if (dist > config.SnapRadius) continue;
 
                 float angle = Vector3.Angle(myConnector.transform.forward, other.transform.forward);
                 if (angle < 180f - config.SnapAngleTolerance) continue;
 
-                bestDist = dist;
-                best = other;
+                candidates.Add(other);
             }
 
-            return best != null;
+            if (candidates.Count == 0) return false;
+
+            candidates.Sort((a, b) =>
+                Vector3.Distance(myConnector.transform.position, a.transform.position)
+                    .CompareTo(Vector3.Distance(myConnector.transform.position, b.transform.position)));
+
+            foreach (var candidate in candidates)
+            {
+                var (rotation, position) = ComputeSnapPose(myConnector, candidate);
+                if (!WouldOverlapOtherPieces(position, rotation))
+                {
+                    best = candidate;
+                    return true;
+                }
+            }
+
+            // 近い候補は見つかったが、どれも干渉するため接続できなかった
+            return false;
+        }
+
+        /// <summary>
+        /// このパーツを指定の位置・回転に置いた場合、自分のColliderが
+        /// (自分自身以外の)他のパーツのColliderと重なるかどうかを判定する。
+        /// 正しく繋がる相手パーツとの接触を誤検知しないよう、
+        /// 判定に使う箱は実際のCollider寸法より一回り小さくして使う。
+        ///
+        /// ※ BoxCollider を1つだけ持つ構成を前提にした簡易実装。
+        /// </summary>
+        private bool WouldOverlapOtherPieces(Vector3 position, Quaternion rotation)
+        {
+            var myCollider = GetComponent<BoxCollider>();
+            if (myCollider == null || config == null) return false;
+
+            Vector3 worldSize = Vector3.Scale(myCollider.size, transform.lossyScale);
+            Vector3 halfExtents = worldSize * 0.5f - Vector3.one * config.InterferenceCheckMargin;
+            halfExtents = Vector3.Max(halfExtents, Vector3.one * 0.001f); // 縮めすぎて負値にならないように
+
+            Vector3 worldCenter = position + rotation * Vector3.Scale(myCollider.center, transform.lossyScale);
+
+            Collider[] hits = Physics.OverlapBox(worldCenter, halfExtents, rotation);
+            foreach (var hit in hits)
+            {
+                if (hit == myCollider) continue;
+                var otherPiece = hit.GetComponentInParent<TrackPiece>();
+                if (otherPiece == null || otherPiece == this) continue;
+                return true; // 自分以外のパーツと干渉している
+            }
+
+            return false;
         }
 
         /// <summary>
