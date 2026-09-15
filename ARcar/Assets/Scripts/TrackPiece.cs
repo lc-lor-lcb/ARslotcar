@@ -51,6 +51,7 @@ namespace ARSlotcar
         private Grabbable grabbable;
         private TrackConnector[] connectors;
         private bool isHeld;
+        private bool isOverTrash;
         private GameObject ghost;
 
         /// <summary>スナップ候補(自分側のコネクタと、接続先の相手コネクタのペア)</summary>
@@ -105,6 +106,15 @@ namespace ARSlotcar
 
                 case PointerEventType.Unselect:
                     isHeld = false;
+                    HideGhost();
+
+                    if (isOverTrash)
+                    {
+                        DisconnectAll();
+                        Destroy(gameObject);
+                        return; // このパーツはもう存在しないので、これ以上何もしない
+                    }
+
                     if (TryFindSnapCandidate(out SnapCandidate candidate))
                     {
                         var (rotation, position) = ComputeSnapPose(candidate.My, candidate.Target);
@@ -115,7 +125,6 @@ namespace ARSlotcar
                         // 位置確定後に「自分の残りのコネクタ」も別の相手と噛み合っていないか再チェックする
                         ConnectRemainingConnectors(candidate.My);
                     }
-                    HideGhost();
                     break;
             }
         }
@@ -295,6 +304,12 @@ namespace ARSlotcar
             {
                 c.Disconnect();
             }
+        }
+
+        /// <summary>TrashZoneから呼ばれる。現在ゴミ箱エリアに触れているかどうかを記録する</summary>
+        public void MarkOverTrash(bool value)
+        {
+            isOverTrash = value;
         }
 
         /// <summary>このピースが持つコネクタ一覧(経路構築などで参照用)</summary>
