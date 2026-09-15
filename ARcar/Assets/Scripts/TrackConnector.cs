@@ -24,7 +24,9 @@ namespace ARSlotcar
 
         public bool IsConnected => ConnectedTo != null;
 
-        /// <summary>2つのコネクタを相互に接続状態にする</summary>
+        /// <summary>コネクタの接続状態が変化した(接続または切断された)時に発火する。CarControllerなどが経路の再構築に使う。</summary>
+        public static event System.Action OnConnectionsChanged;
+
         /// <summary>
         /// 2つのコネクタを接続する。どちらかが既に別の相手と接続済みの場合は、
         /// 何もせず false を返す(既存の接続はそのまま保持され、新しい接続は成立しない)。
@@ -40,6 +42,7 @@ namespace ARSlotcar
 
             a.ConnectedTo = b;
             b.ConnectedTo = a;
+            OnConnectionsChanged?.Invoke();
             return true;
         }
 
@@ -50,6 +53,7 @@ namespace ARSlotcar
             var other = ConnectedTo;
             ConnectedTo = null;
             other.ConnectedTo = null;
+            OnConnectionsChanged?.Invoke();
         }
 
         /// <summary>
