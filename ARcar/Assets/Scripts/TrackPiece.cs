@@ -42,6 +42,10 @@ namespace ARSlotcar
     {
         [SerializeField] private TrackConfig config;
         [SerializeField] private Material ghostMaterial;
+        [Tooltip("コース内に1個限定のスタートパーツかどうか(走行経路の起点として使われる)")]
+        [SerializeField] private bool isStartPiece;
+
+        public bool IsStartPiece => isStartPiece;
 
         private Grabbable grabbable;
         private TrackConnector[] connectors;
@@ -64,6 +68,17 @@ namespace ARSlotcar
             {
                 Debug.LogWarning($"[TrackPiece] {name} に TrackConfig が設定されていません。Inspectorで割り当ててください。", this);
             }
+
+            // このパーツのルート自体に非一様スケールが入っていると、コネクタの位置計算(ローカル/ワールド変換)が
+            // 実際の見た目の位置とズレる原因になる。見た目のメッシュは子オブジェクトに分離し、
+            // ルート(このGameObject)自体のScaleは(1,1,1)のままにすることを推奨。
+            Vector3 scale = transform.lossyScale;
+            if (Mathf.Abs(scale.x - 1f) > 0.001f || Mathf.Abs(scale.y - 1f) > 0.001f || Mathf.Abs(scale.z - 1f) > 0.001f)
+            {
+                Debug.LogWarning($"[TrackPiece] {name}: このオブジェクト自体にScale({scale})が入っています。" +
+                    "ConnectorStart/Endの位置計算が実際の見た目とズレる原因になるため、" +
+                    "見た目のメッシュは子オブジェクトに分離し、このルートのScaleは(1,1,1)にすることを推奨します。", this);
+            }
         }
 
         private void OnEnable()
@@ -84,6 +99,7 @@ namespace ARSlotcar
             {
                 case PointerEventType.Select:
                     isHeld = true;
+                    DisconnectAll(); // 掴んだ時点でコースから切り離す(繋がったまま動かせないように)
                     break;
 
                 case PointerEventType.Unselect:
@@ -92,6 +108,11 @@ namespace ARSlotcar
                     {
                         var (rotation, position) = ComputeSnapPose(candidate.My, candidate.Target);
                         transform.SetPositionAndRotation(position, rotation);
+                        TrackConnector.Connect(candidate.My, candidate.Target);
+
+                        // 直線と直線の間にカーブを挟むなど、両端が同時にハマるケースに対応するため、
+                        // 位置確定後に「自分の残りのコネクタ」も別の相手と噛み合っていないか再チェックする
+                        ConnectRemainingConnectors(candidate.My);
                     }
                     HideGhost();
                     break;
@@ -124,29 +145,7 @@ namespace ARSlotcar
 
             foreach (var myConnector in connectors)
             {
-                TrackConnector best = null;
-                float bestDist = config.SnapRadius;
-
-                foreach (var other in TrackConnector.All)
-                {
-                    if (other == myConnector) continue;
-                    if (other.OwnerPiece == this) continue;               // 自分自身のパーツは除外
-                    if (other.Type != myConnector.Type) continue;         // 種類が違えば接続不可
-
-                    float dist = Vector3.Distance(myConnector.transform.position, other.transform.position);
-                    if (dist > config.SnapRadius) continue;
-
-                    float angle = Vector3.Angle(myConnector.transform.forward, other.transform.forward);
-                    if (angle < 180f - config.SnapAngleTolerance) continue;
-
-                    if (dist < bestDist)
-                    {
-                        bestDist = dist;
-                        best = other;
-                    }
-                }
-
-                if (best != null)
+                if (TryFindCandidateFor(myConnector, out TrackConnector best))
                 {
                     candidate = new SnapCandidate { My = myConnector, Target = best };
                     return true;
@@ -154,6 +153,57 @@ namespace ARSlotcar
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// 指定した1つの自分のコネクタについてだけ、検知半径内・向きがほぼ逆・同じType・
+        /// 未接続、という条件を満たす最も近い相手コネクタを探す。
+        /// </summary>
+        private bool TryFindCandidateFor(TrackConnector myConnector, out TrackConnector best)
+        {
+            best = null;
+            float bestDist = config.SnapRadius;
+
+            foreach (var other in TrackConnector.All)
+            {
+                if (other == myConnector) continue;
+                if (other.OwnerPiece == this) continue;               // 自分自身のパーツは除外
+                if (other.Type != myConnector.Type) continue;         // 種類が違えば接続不可
+                if (other.IsConnected) continue;                      // 既に他のパーツと接続済みなら対象外
+
+                float dist = Vector3.Distance(myConnector.transform.position, other.transform.position);
+                if (dist > bestDist) continue;
+
+                float angle = Vector3.Angle(myConnector.transform.forward, other.transform.forward);
+                if (angle < 180f - config.SnapAngleTolerance) continue;
+
+                bestDist = dist;
+                best = other;
+            }
+
+            return best != null;
+        }
+
+        /// <summary>
+        /// メインのスナップ位置確定後、「今接続したコネクタ以外」の自分のコネクタについても、
+        /// 位置確定後の座標で改めて相手を探して接続する。
+        /// 直線と直線の間にカーブを挟む(両端が同時に確定する)ケースで、
+        /// 片方しか接続記録が残らず、後から別のパーツが同じ場所に重なってしまう事故を防ぐ。
+        /// </summary>
+        private void ConnectRemainingConnectors(TrackConnector alreadyConnected)
+        {
+            if (connectors == null) return;
+
+            foreach (var myConnector in connectors)
+            {
+                if (myConnector == alreadyConnected) continue;
+                if (myConnector.IsConnected) continue;
+
+                if (TryFindCandidateFor(myConnector, out TrackConnector other))
+                {
+                    TrackConnector.Connect(myConnector, other);
+                }
+            }
         }
 
         /// <summary>
@@ -186,6 +236,30 @@ namespace ARSlotcar
             Vector3 finalPosition = target.transform.position - finalRotation * localOffset;
 
             return (finalRotation, finalPosition);
+        }
+
+        /// <summary>このピースが持つ全コネクタの接続を解除する(掴んだ時に呼ぶ)</summary>
+        private void DisconnectAll()
+        {
+            if (connectors == null) return;
+            foreach (var c in connectors)
+            {
+                c.Disconnect();
+            }
+        }
+
+        /// <summary>このピースが持つコネクタ一覧(経路構築などで参照用)</summary>
+        public TrackConnector[] GetConnectors() => connectors;
+
+        /// <summary>2コネクタ構成のピースで、一方を指定してもう一方を取得する(経路構築用)</summary>
+        public TrackConnector GetOtherConnector(TrackConnector one)
+        {
+            if (connectors == null) return null;
+            foreach (var c in connectors)
+            {
+                if (c != one) return c;
+            }
+            return null;
         }
 
         // ---- ここからゴースト(半透明プレビュー)関連 ----
