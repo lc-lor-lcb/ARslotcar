@@ -42,7 +42,12 @@ namespace ARSlotcar
             if (evt.Type != PointerEventType.Select) return;
 
             GameObject template = piecePrefabOverride != null ? piecePrefabOverride : gameObject;
-            Instantiate(template, transform.position, transform.rotation);
+            // 親(ShelfRootなど)を明示的に引き継ぐことで、複製した先(次の在庫)も棚の表示/非表示の対象になり続けるようにする
+            Instantiate(template, transform.position, transform.rotation, transform.parent);
+
+            // 今掴まれている方(=これから持ち出される実体)は棚の階層から独立させる。
+            // これをしないと、コースに置いた後のパーツまで、棚を非表示にするたびに巻き添えで消えてしまう。
+            transform.SetParent(null, true);
 
             // 今掴まれている方は、もう棚のテンプレートではなく通常のパーツとして扱う
             Destroy(this);
