@@ -3,9 +3,12 @@ using UnityEngine;
 namespace ARSlotcar
 {
     /// <summary>
-    /// 左手コントローラーの人差し指トリガーを押している間だけ、
-    /// 配下のパーツ棚(複製元パーツ一式をまとめた親オブジェクト)を表示・操作可能にする。
-    /// 離すと非表示・操作不可になる。
+    /// A/B/X/Yいずれかのボタンを押すたびに、配下のパーツ棚(複製元パーツ一式をまとめた親オブジェクト)の
+    /// 表示/非表示をトグルする。
+    ///
+    /// OVRInput.Button.One は右手A・左手Xを、Button.Two は右手B・左手Yを、それぞれ左右まとめて
+    /// 検知する(公式のVirtual Mapping)。この2つのGetDownを合わせることで、A/B/X/Yどれを押しても
+    /// 反応するようにしている。
     ///
     /// 使い方: 棚のパーツ(PartShelfSlot付き)を全部、空の親GameObject(shelfRoot)の子にまとめる。
     /// このスクリプトは、その親とは別の常時アクティブなオブジェクトに付ける
@@ -16,18 +19,21 @@ namespace ARSlotcar
         [Tooltip("パーツ棚一式をまとめた親オブジェクト")]
         [SerializeField] private Transform shelfRoot;
 
-        [Tooltip("トリガーをどれだけ押し込んだら「表示」とみなすか(0〜1)")]
-        [Range(0.05f, 1f)]
-        [SerializeField] private float pressThreshold = 0.5f;
+        [Tooltip("開始時に棚を表示しておくか")]
+        [SerializeField] private bool startVisible = false;
+
+        private void Start()
+        {
+            if (shelfRoot != null) shelfRoot.gameObject.SetActive(startVisible);
+        }
 
         private void Update()
         {
             if (shelfRoot == null) return;
 
-            bool pressed = OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger) >= pressThreshold;
-            if (shelfRoot.gameObject.activeSelf != pressed)
+            if (OVRInput.GetDown(OVRInput.Button.One) || OVRInput.GetDown(OVRInput.Button.Two))
             {
-                shelfRoot.gameObject.SetActive(pressed);
+                shelfRoot.gameObject.SetActive(!shelfRoot.gameObject.activeSelf);
             }
         }
     }

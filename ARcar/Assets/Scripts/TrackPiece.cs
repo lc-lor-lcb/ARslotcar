@@ -101,28 +101,12 @@ namespace ARSlotcar
             {
                 case PointerEventType.Select:
                     isHeld = true;
-
-                    if (TryIsLeftHand(evt) == true)
-                    {
-                        // 左手:繋がっている全パーツをまとめて掴む(グループ移動)
-                        BeginGroupGrab();
-                    }
-                    else
-                    {
-                        // 右手(または判定不能な場合):個別ブロックとして、自分の接続だけ切り離す
-                        DisconnectAll();
-                    }
+                    DisconnectAll(); // 掴んだ時点でコースから切り離す(繋がったまま動かせないように)
                     break;
 
                 case PointerEventType.Unselect:
                     isHeld = false;
                     HideGhost();
-
-                    // グループ移動中だった場合、他のパーツを自分の子から外して元に戻す。
-                    // グループ移動でなければ何もしない(安全に毎回呼べる)。
-                    // 削除・スナップ判定より先に行うことで、ゴミ箱に入れた時に
-                    // グループごと巻き添えで消えてしまうのを防ぐ。
-                    EndGroupGrab();
 
                     if (isOverTrash && !isStartPiece)
                     {
@@ -145,116 +129,9 @@ namespace ARSlotcar
             }
         }
 
-        /// <summary>
-        /// PointerEventが左手由来かどうかを取得する。判定できない場合(未登録・コントローラー直接など)はnull。
-        /// ※ シーンに HandednessRegistry を1つ置き、左右のHandGrabInteractorを登録しておく必要がある。
-        /// </summary>
-        private bool? TryIsLeftHand(PointerEvent evt)
-        {
-            if (HandednessRegistry.Instance == null) return null;
-            return HandednessRegistry.Instance.IsLeftHand(evt.Identifier);
-        }
-
-        /// <summary>
-        /// 現在このパーツからコネクタを辿って繋がっている全パーツを(自分自身も含めて)収集する。
-        /// </summary>
-        private List<TrackPiece> GetConnectedGroup()
-        {
-            var group = new List<TrackPiece>();
-            var visited = new HashSet<TrackPiece> { this };
-            var queue = new Queue<TrackPiece>();
-            queue.Enqueue(this);
-
-            while (queue.Count > 0)
-            {
-                var current = queue.Dequeue();
-                group.Add(current);
-
-                foreach (var connector in current.connectors)
-                {
-                    if (!connector.IsConnected) continue;
-                    var neighborPiece = connector.ConnectedTo.OwnerPiece;
-                    if (neighborPiece == null || visited.Contains(neighborPiece)) continue;
-                    visited.Add(neighborPiece);
-                    queue.Enqueue(neighborPiece);
-                }
-            }
-
-            return group;
-        }
-
-        private struct GroupMemberOffset
-        {
-            public TrackPiece Piece;
-            public Vector3 LocalPositionOffset; // 掴んだ瞬間の、自分(this)から見た相対位置
-            public Quaternion LocalRotationOffset; // 掴んだ瞬間の、自分(this)から見た相対回転
-        }
-
-        private readonly List<GroupMemberOffset> groupOffsets = new List<GroupMemberOffset>();
-        private bool isGroupGrab;
-
-        /// <summary>
-        /// 繋がっている全パーツをグループとして掴む。グループの外への接続だけを切り離し、
-        /// グループ内部の接続は維持したまま、自分以外のメンバーとの相対位置・相対回転を記録する。
-        ///
-        /// 親子付け(SetParent)ではなく、毎フレーム明示的に位置を計算して追従させる方式にしている。
-        /// KinematicなRigidbodyを持つオブジェクト同士を親子付けすると、見た目が追従しないことが
-        /// あったため、より確実なこちらの方式に変更した。
-        /// </summary>
-        private void BeginGroupGrab()
-        {
-            var group = GetConnectedGroup();
-            var groupSet = new HashSet<TrackPiece>(group);
-
-            foreach (var piece in group)
-            {
-                foreach (var connector in piece.connectors)
-                {
-                    if (!connector.IsConnected) continue;
-                    var neighborPiece = connector.ConnectedTo.OwnerPiece;
-                    if (neighborPiece != null && !groupSet.Contains(neighborPiece))
-                    {
-                        connector.Disconnect(); // グループの外への接続のみ切り離す
-                    }
-                }
-            }
-
-            groupOffsets.Clear();
-            Quaternion invRotation = Quaternion.Inverse(transform.rotation);
-            foreach (var piece in group)
-            {
-                if (piece == this) continue;
-                groupOffsets.Add(new GroupMemberOffset
-                {
-                    Piece = piece,
-                    LocalPositionOffset = invRotation * (piece.transform.position - transform.position),
-                    LocalRotationOffset = invRotation * piece.transform.rotation
-                });
-            }
-            isGroupGrab = groupOffsets.Count > 0;
-        }
-
-        /// <summary>グループ移動の記録をクリアする(安全にいつでも呼べる)</summary>
-        private void EndGroupGrab()
-        {
-            isGroupGrab = false;
-            groupOffsets.Clear();
-        }
-
         private void Update()
         {
             if (!isHeld) return;
-
-            if (isGroupGrab)
-            {
-                foreach (var member in groupOffsets)
-                {
-                    if (member.Piece == null) continue;
-                    member.Piece.transform.SetPositionAndRotation(
-                        transform.position + transform.rotation * member.LocalPositionOffset,
-                        transform.rotation * member.LocalRotationOffset);
-                }
-            }
 
             if (TryFindSnapCandidate(out SnapCandidate candidate))
             {
