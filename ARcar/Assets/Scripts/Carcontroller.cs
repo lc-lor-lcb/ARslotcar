@@ -17,16 +17,16 @@ namespace ARSlotcar
     /// カーブ半径ごとの厳密な安全速度計算はせず、「最高速度に近い状態できついカーブに入ったら
     /// コースアウトする」という緩い判定にしている。最高速度をやや高めに設定することで、
     /// 「速く走りたい(爽快感)」と「速すぎるとコースアウトする(リスク)」のトレードオフを作る狙い。
-    /// コースアウトした場合は、その場で停止して一定時間後にスタート地点へ復帰する
-    /// (「直近のチェックポイントへ復帰」という仕様だったが、チェックポイントの仕組み自体が
-    /// まだ無いため、現状はスタート地点への復帰に簡略化している)。
+    /// 条件を満たし始めると、まず車が揺れて警告する(猶予時間)。その間にトリガーを離して減速すれば
+    /// 回避でき、揺れが続いて猶予時間を超えるとコースアウトする。
+    /// コースアウト時は、突っ込んだ速度に応じた整数回転(速いほど多く回る)でスピンし、
+    /// ちょうど前を向いた状態で終わって、同じ場所から走行を再開する(スタート地点へは戻さない)。
     ///
     /// 入力は ThrottleInput(0〜1)のみに抽象化してある。実際のMeta XRコントローラーの
     /// ボタン取得処理はこのスクリプトに含めていない(別スクリプトからこのフィールドをセットする想定)。
     ///
     /// 未実装(次のステップで対応予定):
-    /// - ループ区間で車体が上下反転する際の見た目の破綻対策(現状はワールドUp基準でLookRotationしている)
-    /// - 「直近のチェックポイント」への復帰(現状はスタート地点固定)
+    /// - ループ区間で車体が上下反転する際の見た目の破綻対策(現状は前フレームのUpを引き継いでLookRotationしている)
     /// </summary>
     public class CarController : MonoBehaviour
     {
@@ -53,12 +53,29 @@ namespace ARSlotcar
         [SerializeField] private float curveSampleDistance = 0.15f;
         [Tooltip("上記の距離を進む間に、進行方向がこの角度(度)以上変化したら「きついカーブ」とみなす")]
         [Range(2f, 90f)]
-        [SerializeField] private float derailCurveAngleThreshold = 20f;
+        [SerializeField] private float derailCurveAngleThreshold = 32f;
         [Tooltip("最大速度に対してこの割合以上の速度が出ている状態を「速すぎる」とみなす(0〜1)")]
         [Range(0.1f, 1f)]
-        [SerializeField] private float derailSpeedFraction = 0.75f;
-        [Tooltip("コースアウトしてからスタート地点へ復帰するまでの待ち時間(秒)")]
-        [SerializeField] private float derailRecoveryDuration = 3f;
+        [SerializeField] private float derailSpeedFraction = 0.9f;
+        [Tooltip("「速すぎる状態できついカーブ」の条件を満たし続けた時間がこの秒数を超えたら、" +
+                 "実際にコースアウトさせる。この間は車が揺れて警告し、トリガーを離せば回避できる")]
+        [Range(0f, 1.5f)]
+        [SerializeField] private float derailGracePeriod = 0.6f;
+
+        [Header("警告の揺れ(コースアウト直前)")]
+        [Tooltip("警告中の最大の揺れ角度(度)。猶予時間が進むほど、この値に向かって大きくなる")]
+        [SerializeField] private float warningShakeAngle = 6f;
+        [Tooltip("警告中の最大の横揺れ量(メートル)")]
+        [SerializeField] private float warningShakeOffset = 0.01f;
+        [Tooltip("揺れの速さ(1秒あたりの往復回数)")]
+        [SerializeField] private float warningShakeFrequency = 12f;
+
+        [Header("スピン演出")]
+        [Tooltip("最高速度で突っ込んだ場合の最大回転数(整数の周回数で着地する)")]
+        [Range(1, 5)]
+        [SerializeField] private int derailMaxRotations = 3;
+        [Tooltip("1回転あたりの所要時間(秒)")]
+        [SerializeField] private float derailSecondsPerRotation = 0.4f;
 
         /// <summary>0(離した)〜1(全開)。ボタン入力側のスクリプトから毎フレームセットする想定</summary>
         [Range(0f, 1f)]
@@ -73,7 +90,12 @@ namespace ARSlotcar
         private Vector3 currentUp = Vector3.up;
 
         private bool isDerailed;
-        private float derailTimer;
+        private float derailSpinElapsed; // スピン開始からの経過時間
+        private float derailSpinDuration; // このスピンの所要時間(イージングが完了するまで)
+        private float derailTotalSpinAngle; // このスピンの最終的な累計回転角度(必ず360の倍数)
+        private Quaternion derailStartRotation;
+        private Vector3 derailSpinAxis;
+        private float derailConditionTimer; // 「速すぎる状態できついカーブ」が連続している時間
 
         /// <summary>今走っているラップの経過時間(秒)。コースアウトすると0にリセットされる(記録されない)</summary>
         public float CurrentLapTime { get; private set; }
@@ -109,7 +131,9 @@ namespace ARSlotcar
             currentSpeed = 0f;
             currentUp = Vector3.up; // 経路が組み直されたら、上向きの基準もリセットする
             isDerailed = false;
-            derailTimer = 0f;
+            derailSpinElapsed = 0f;
+            derailTotalSpinAngle = 0f;
+            derailConditionTimer = 0f;
             CurrentLapTime = 0f;
             BestLapTime = float.PositiveInfinity; // コースが変わったので、古い記録は無効にする
 
@@ -134,12 +158,20 @@ namespace ARSlotcar
 
             if (isDerailed)
             {
-                derailTimer -= Time.deltaTime;
-                if (derailTimer <= 0f)
+                CurrentLapTime += Time.deltaTime; // スピン中もタイムは進む(コースアウトのペナルティとして自然に時間を失う)
+
+                derailSpinElapsed += Time.deltaTime;
+                float progress = derailSpinDuration > 0f ? Mathf.Clamp01(derailSpinElapsed / derailSpinDuration) : 1f;
+                // イーズアウト(最初は勢いよく、だんだん収まる)。progress=1でちょうどderailTotalSpinAngleに到達するため、
+                // 360の倍数で着地するよう回転数を整数にしてあるこの角度は、必ず元の向き(前方)と一致する
+                float eased = 1f - (1f - progress) * (1f - progress);
+                transform.rotation = Quaternion.AngleAxis(eased * derailTotalSpinAngle, derailSpinAxis) * derailStartRotation;
+
+                if (progress >= 1f)
                 {
                     Recover();
                 }
-                return; // 復帰待ちの間は走行処理を行わない
+                return; // 復帰待ちの間は通常の走行処理を行わない
             }
 
             // 加減速: アナログではなく、閾値を境にした二値的な挙動
@@ -172,33 +204,72 @@ namespace ARSlotcar
 
             int segmentIndex = ApplyPositionAtDistance(distanceTraveled);
 
-            // コースアウト判定: 速すぎる状態できついカーブに差し掛かったら
+            // コースアウト判定: 「速すぎる状態できついカーブ」の条件が、一瞬ではなく
+            // derailGracePeriod秒以上連続して続いた場合にのみ実際にコースアウトさせる
             float curveAngle = ComputeLocalCurveAngle(segmentIndex);
             bool tooFast = currentSpeed >= maxSpeed * derailSpeedFraction;
             if (tooFast && curveAngle >= derailCurveAngleThreshold)
             {
-                Derail();
+                derailConditionTimer += Time.deltaTime;
+                if (derailConditionTimer >= derailGracePeriod)
+                {
+                    Derail();
+                }
+            }
+            else
+            {
+                derailConditionTimer = 0f;
+            }
+
+            // コースアウト直前の警告: 猶予時間が進むほど、揺れが大きくなる。
+            // (ApplyPositionAtDistanceが毎フレーム経路から位置・向きを作り直すので、揺れは蓄積しない)
+            if (!isDerailed && derailConditionTimer > 0f)
+            {
+                float intensity = derailGracePeriod > 0f ? Mathf.Clamp01(derailConditionTimer / derailGracePeriod) : 1f;
+                ApplyWarningShake(intensity);
             }
         }
-        /// <summary>コースアウトさせる: その場で停止し、一定時間後にスタート地点へ復帰する</summary>
+
+        /// <summary>経路に沿った位置・向きに、警告用の揺れ(左右の首振り・傾き・横ブレ)を上乗せする</summary>
+        private void ApplyWarningShake(float intensity)
+        {
+            float phase = Time.time * warningShakeFrequency * Mathf.PI * 2f;
+            float yaw = Mathf.Sin(phase) * warningShakeAngle * intensity;
+            float roll = Mathf.Sin(phase * 1.3f + 1f) * warningShakeAngle * 0.5f * intensity;
+            float sway = Mathf.Sin(phase * 1.7f) * warningShakeOffset * intensity;
+
+            transform.rotation = transform.rotation * Quaternion.Euler(0f, yaw, roll);
+            transform.position += transform.right * sway;
+        }
+
+        /// <summary>コースアウトさせる: 速度に応じた回転数(整数)でスピンさせ、同じ場所で走行を再開する</summary>
         private void Derail()
         {
             isDerailed = true;
-            derailTimer = derailRecoveryDuration;
+            derailConditionTimer = 0f;
+
+            // currentSpeedを0にする前に、回転数の計算に使う
+            float speedRatio = maxSpeed > 0f ? Mathf.Clamp01(currentSpeed / maxSpeed) : 0f;
+            int rotations = Mathf.Max(1, Mathf.RoundToInt(Mathf.Lerp(1f, derailMaxRotations, speedRatio)));
+            derailTotalSpinAngle = rotations * 360f; // 必ず360の倍数 = 終了時は必ず開始時と同じ向きになる
+            derailSpinDuration = rotations * derailSecondsPerRotation;
+            derailSpinElapsed = 0f;
+
             currentSpeed = 0f;
-            CurrentLapTime = 0f; // コースアウトした挑戦は記録に残さない
+            derailStartRotation = transform.rotation;
+            derailSpinAxis = currentUp.sqrMagnitude > 0.0001f ? currentUp : Vector3.up;
         }
 
-        /// <summary>コースアウトからの復帰: スタート地点へ戻す</summary>
+        /// <summary>コースアウトからの復帰: 位置はそのまま(スタートへは戻さない)、速度だけ0から再開する</summary>
         private void Recover()
         {
             isDerailed = false;
-            distanceTraveled = 0f;
             currentSpeed = 0f;
-            currentUp = Vector3.up;
             if (pathPoints.Count > 0)
             {
-                ApplyPositionAtDistance(0f);
+                // distanceTraveledは変更しない(コースアウトした場所から再開するため)。
+                // スピン演出で変わった向きを、経路に沿った正しい向きに戻すためだけに呼ぶ。
+                ApplyPositionAtDistance(distanceTraveled);
             }
         }
 

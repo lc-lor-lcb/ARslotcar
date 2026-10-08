@@ -3387,8 +3387,12 @@ MonoBehaviour:
   curveSampleDistance: 0.15
   derailCurveAngleThreshold: 35
   derailSpeedFraction: 0.85
-  derailSpinSpeedFactor: 400
-  derailSpinDeceleration: 300
+  derailGracePeriod: 0.6
+  warningShakeAngle: 6
+  warningShakeOffset: 0.01
+  warningShakeFrequency: 12
+  derailMaxRotations: 3
+  derailSecondsPerRotation: 0.4
   ThrottleInput: 0
 --- !u!4 &446049082
 Transform:
