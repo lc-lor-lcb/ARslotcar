@@ -27,6 +27,12 @@ namespace ARSlotcar
         /// <summary>コネクタの接続状態が変化した(接続または切断された)時に発火する。CarControllerなどが経路の再構築に使う。</summary>
         public static event System.Action OnConnectionsChanged;
 
+        /// <summary>接続自体は変わらなくても、パーツの位置が変わった時などに、経路を使う側へ知らせるために呼ぶ</summary>
+        public static void NotifyConnectionsChanged()
+        {
+            OnConnectionsChanged?.Invoke();
+        }
+
         /// <summary>
         /// 2つのコネクタを接続する。どちらかが既に別の相手と接続済みの場合は、
         /// 何もせず false を返す(既存の接続はそのまま保持され、新しい接続は成立しない)。

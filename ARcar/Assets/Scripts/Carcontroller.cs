@@ -1,38 +1,47 @@
 using System.Collections.Generic;
 using UnityEngine;
+using Oculus.Interaction;
 
 namespace ARSlotcar
 {
     /// <summary>
-    /// 構築済みのコース経路(ワールド座標点列)に沿って車を走らせる。
-    /// 物理演算は使わず、経路上を進んだ距離(弧長)をパラメータとして位置・向きを直接更新する方式。
+    /// 車。プレイヤーが車を手でつまんでコース上に置くと、その位置から一番近い経路上の点に吸着し、
+    /// 置いた時の車の向きの方向に走れる状態になる(置いた直後は速度0。トリガーを引くと走り出す)。
+    /// スタートパーツは不要で、コースを組み替えても車は今の位置に載ったまま、新しい経路に載り直す。
     ///
-    /// 【スロットル入力について】
-    /// Meta Questコントローラーのトリガーはバネが弱く、実車のスロットカーのような
-    /// 繊細なアナログ操作(ギリギリを攻める微調整)がしづらいため、
-    /// アナログ値をそのまま速度に反映するのではなく、閾値を境にした二値的な挙動にしている:
+    /// 走行は物理演算を使わず、経路上を進んだ距離(弧長)をパラメータとして位置・向きを直接更新する方式。
+    ///
+    /// 【置き方】
+    /// - 掴んでいる間は経路追従を止める。離した位置がコース上(placeSnapDistance以内)なら吸着し、
+    ///   範囲外なら掴む前の状態(コース上ならその位置、コース外なら元の位置)に戻る。
+    /// - 車の前方向(+Z)と経路の進行方向が逆向きなら、経路を反転して車の向きの方向に走らせる。
+    ///
+    /// 【スロットル入力】
+    /// Meta Questコントローラーのトリガーはバネが弱く繊細なアナログ操作がしづらいため、
+    /// 閾値を境にした二値的な挙動にしている:
     /// 閾値以上押し込んだら一定の加速度で加速、閾値未満なら加速度ゼロ(その後は慣性で減速)。
+    /// 入力は ThrottleInput(0〜1)のみに抽象化してあり、別スクリプトからセットする想定。
     ///
-    /// 【コースアウトについて】
-    /// カーブ半径ごとの厳密な安全速度計算はせず、「最高速度に近い状態できついカーブに入ったら
-    /// コースアウトする」という緩い判定にしている。最高速度をやや高めに設定することで、
-    /// 「速く走りたい(爽快感)」と「速すぎるとコースアウトする(リスク)」のトレードオフを作る狙い。
-    /// 条件を満たし始めると、まず車が揺れて警告する(猶予時間)。その間にトリガーを離して減速すれば
-    /// 回避でき、揺れが続いて猶予時間を超えるとコースアウトする。
+    /// 【コースアウト】
+    /// 最高速度に近い状態できついカーブに入り、その状態が猶予時間続くとコースアウトする。
+    /// 猶予時間の間は車が揺れて警告し、トリガーを離して減速すれば回避できる。
     /// コースアウト時は、突っ込んだ速度に応じた整数回転(速いほど多く回る)でスピンし、
-    /// ちょうど前を向いた状態で終わって、同じ場所から走行を再開する(スタート地点へは戻さない)。
+    /// ちょうど前を向いた状態で終わって、同じ場所から走行を再開する。
     ///
-    /// 入力は ThrottleInput(0〜1)のみに抽象化してある。実際のMeta XRコントローラーの
-    /// ボタン取得処理はこのスクリプトに含めていない(別スクリプトからこのフィールドをセットする想定)。
+    /// 【Unity側の準備】
+    /// このオブジェクトに「Add Grab Interaction」ウィザードでGrabbable一式(コライダー・Rigidbody含む)を付けておく。
+    /// Rigidbodyは Is Kinematic をON、Grabbable の Throw When Unselected はOFFにする。
     ///
-    /// 未実装(次のステップで対応予定):
-    /// - ループ区間で車体が上下反転する際の見た目の破綻対策(現状は前フレームのUpを引き継いでLookRotationしている)
+    /// 既知の制限: 車が載っているパーツを掴んで動かした場合、車はその場に残る(一緒には運ばれない)。
     /// </summary>
     public class CarController : MonoBehaviour
     {
-        [Header("経路")]
-        [Tooltip("コースの起点となるスタートパーツ")]
-        [SerializeField] private TrackPiece startPiece;
+        [Header("置き方")]
+        [Tooltip("車を離した位置から、この距離(メートル)以内にコースがあれば吸着する。" +
+                 "手で置くので、少し余裕を持たせてある")]
+        [SerializeField] private float placeSnapDistance = 0.2f;
+        [Tooltip("掴んでいる間、置かれる位置に出す半透明のゴースト用マテリアル(パーツのゴーストと同じものでOK)")]
+        [SerializeField] private Material ghostMaterial;
 
         [Header("走行パラメータ")]
         [Tooltip("最大速度(m/s)。高めに設定するほど爽快感が出るが、コースアウトのリスクも上がる")]
@@ -81,89 +90,314 @@ namespace ARSlotcar
         [Range(0f, 1f)]
         public float ThrottleInput;
 
+        private Grabbable grabbable;
+
+        // 経路
         private List<Vector3> pathPoints = new List<Vector3>();
         private List<float> cumulativeLengths = new List<float>();
         private bool isLooping;
-        private float currentSpeed;
-        private float distanceTraveled;
         private float totalPathLength;
+        private float distanceTraveled;
         private Vector3 currentUp = Vector3.up;
+        private Vector3 travelForward = Vector3.forward; // 経路上での現在の進行方向(揺れやスピンの影響を受けない)
 
+        // 状態
+        private bool isOnTrack;
+        private bool isHeld;
+        private float currentSpeed;
+
+        // 置く位置のゴースト
+        private GameObject ghost;
+        private float previewTimer;
+
+        // 掴む前の状態(コース外に離した時に戻すため)
+        private Vector3 heldStartPosition;
+        private Quaternion heldStartRotation;
+        private bool heldStartWasOnTrack;
+
+        // コースアウト
         private bool isDerailed;
-        private float derailSpinElapsed; // スピン開始からの経過時間
-        private float derailSpinDuration; // このスピンの所要時間(イージングが完了するまで)
-        private float derailTotalSpinAngle; // このスピンの最終的な累計回転角度(必ず360の倍数)
+        private float derailSpinElapsed;
+        private float derailSpinDuration;
+        private float derailTotalSpinAngle; // 必ず360の倍数
         private Quaternion derailStartRotation;
         private Vector3 derailSpinAxis;
-        private float derailConditionTimer; // 「速すぎる状態できついカーブ」が連続している時間
+        private float derailConditionTimer;
 
-        /// <summary>今走っているラップの経過時間(秒)。コースアウトすると0にリセットされる(記録されない)</summary>
-        public float CurrentLapTime { get; private set; }
-        /// <summary>このセッション中のベストラップタイム(秒)。まだ1周もしていなければ+∞</summary>
-        public float BestLapTime { get; private set; } = float.PositiveInfinity;
+        private void Awake()
+        {
+            grabbable = GetComponent<Grabbable>();
+            if (grabbable == null)
+            {
+                Debug.LogWarning("[CarController] Grabbableが見つかりません。「Add Grab Interaction」ウィザードで車に掴む機能を付けてください。", this);
+            }
+
+            var body = GetComponent<Rigidbody>();
+            if (body != null)
+            {
+                body.isKinematic = true;
+                body.useGravity = false;
+            }
+        }
 
         private void Start()
         {
-            RebuildPath();
+            // シーン開始時に、すでにコースの上にいる場合は載せておく(コース外なら何もしない)
+            TrySeatOnTrack(transform.position, transform.forward, true);
         }
 
         private void OnEnable()
         {
-            // パーツの接続/切断のたびに、自動で経路を組み直す
-            TrackConnector.OnConnectionsChanged += RebuildPath;
+            if (grabbable != null) grabbable.WhenPointerEventRaised += HandlePointerEvent;
+            // パーツの接続/切断/移動のたびに、今の位置を保ったまま新しいコースに載り直す
+            TrackConnector.OnConnectionsChanged += HandleConnectionsChanged;
         }
 
         private void OnDisable()
         {
-            TrackConnector.OnConnectionsChanged -= RebuildPath;
+            if (grabbable != null) grabbable.WhenPointerEventRaised -= HandlePointerEvent;
+            TrackConnector.OnConnectionsChanged -= HandleConnectionsChanged;
+            HideGhost();
+        }
+
+        private void OnDestroy()
+        {
+            if (ghost != null) Destroy(ghost);
+        }
+
+        // ---- 掴む・置く ----
+
+        private void HandlePointerEvent(PointerEvent evt)
+        {
+            switch (evt.Type)
+            {
+                case PointerEventType.Select:
+                    if (isHeld) break;
+                    isHeld = true;
+
+                    heldStartPosition = transform.position;
+                    heldStartRotation = transform.rotation;
+                    heldStartWasOnTrack = isOnTrack;
+
+                    // 掴んだ時点で、走行・コースアウト中の状態は全部キャンセルする
+                    isDerailed = false;
+                    derailConditionTimer = 0f;
+                    currentSpeed = 0f;
+                    break;
+
+                case PointerEventType.Unselect:
+                    if (!isHeld) break;
+                    isHeld = false;
+                    HideGhost();
+
+                    if (TrySeatOnTrack(transform.position, transform.forward, true))
+                    {
+                        currentSpeed = 0f; // 置いた直後は止まっている
+                    }
+                    else
+                    {
+                        RestoreAfterFailedPlacement();
+                    }
+                    break;
+            }
+        }
+
+        /// <summary>コース外に離した場合: 掴む前の状態に戻す</summary>
+        private void RestoreAfterFailedPlacement()
+        {
+            if (heldStartWasOnTrack && TrySeatOnTrack(heldStartPosition, travelForward, true))
+            {
+                return; // 掴む前にいたコース上の位置に戻った
+            }
+
+            isOnTrack = false;
+            transform.SetPositionAndRotation(heldStartPosition, heldStartRotation);
+        }
+
+        /// <summary>コースが変化した時: 掴まれていなければ、今の位置・進行方向を保ったまま載り直す</summary>
+        private void HandleConnectionsChanged()
+        {
+            if (isHeld || !isOnTrack) return;
+
+            if (!TrySeatOnTrack(transform.position, travelForward, false))
+            {
+                // 載っていたコースが無くなった: その場に止まって、置き直されるのを待つ
+                isOnTrack = false;
+                currentSpeed = 0f;
+                isDerailed = false;
+                derailConditionTimer = 0f;
+            }
+        }
+
+        // ---- コースへの吸着 ----
+
+        /// <summary>車を載せる位置・経路の計算結果。計算だけで、車の状態は変更しない</summary>
+        private struct SeatResult
+        {
+            public List<Vector3> Points;
+            public List<float> Lengths;
+            public float Total;
+            public float Along;
+            public bool IsLooping;
         }
 
         /// <summary>
-        /// コース編集後(パーツのスナップ変更後)に呼び出して経路を再構築する。
-        /// ビルドモード→レースモードへ切り替えるタイミングで呼ぶ想定。
+        /// worldPos に一番近いパーツを探し、そのパーツと繋がっているコース全体の経路上での
+        /// 載せる位置を計算する。facing の向きが経路の進行方向と逆なら、経路を反転して
+        /// facing の方向に走る経路にする。状態は一切変更しない(ゴースト表示にも使う)。
         /// </summary>
-        public void RebuildPath()
+        private bool TryComputeSeat(Vector3 worldPos, Vector3 facing, out SeatResult seat)
         {
-            var result = CoursePathBuilder.Build(startPiece);
-            pathPoints = result.Points;
-            isLooping = result.IsLooping;
-            distanceTraveled = 0f;
-            currentSpeed = 0f;
-            currentUp = Vector3.up; // 経路が組み直されたら、上向きの基準もリセットする
-            isDerailed = false;
-            derailSpinElapsed = 0f;
-            derailTotalSpinAngle = 0f;
-            derailConditionTimer = 0f;
-            CurrentLapTime = 0f;
-            BestLapTime = float.PositiveInfinity; // コースが変わったので、古い記録は無効にする
+            seat = default;
 
-            cumulativeLengths.Clear();
-            totalPathLength = 0f;
-            cumulativeLengths.Add(0f);
-            for (int i = 1; i < pathPoints.Count; i++)
+            TrackPiece seed = FindNearestPiece(worldPos, out float distance);
+            if (seed == null || distance > placeSnapDistance) return false;
+
+            var result = CoursePathBuilder.Build(seed);
+            if (result.Points.Count < 2) return false;
+
+            List<Vector3> points = result.Points;
+            List<float> lengths = ComputeCumulativeLengths(points);
+            float total = lengths[lengths.Count - 1];
+            if (total <= 0.0001f) return false;
+
+            float along = ProjectOntoPath(points, lengths, worldPos, out Vector3 tangent);
+
+            // 車の向きが経路の進行方向と逆なら、経路を反転する
+            if (facing.sqrMagnitude > 0.0001f && Vector3.Dot(facing.normalized, tangent) < 0f)
             {
-                totalPathLength += Vector3.Distance(pathPoints[i - 1], pathPoints[i]);
-                cumulativeLengths.Add(totalPathLength);
+                points.Reverse();
+                lengths = ComputeCumulativeLengths(points);
+                along = total - along;
             }
 
-            if (pathPoints.Count > 0)
+            seat = new SeatResult
             {
-                transform.position = pathPoints[0];
-            }
+                Points = points,
+                Lengths = lengths,
+                Total = total,
+                Along = Mathf.Clamp(along, 0f, total),
+                IsLooping = result.IsLooping
+            };
+            return true;
         }
+
+        /// <summary>計算した位置に、実際に車を載せる。成功した場合のみ状態を更新する</summary>
+        private bool TrySeatOnTrack(Vector3 worldPos, Vector3 facing, bool resetUp)
+        {
+            if (!TryComputeSeat(worldPos, facing, out SeatResult seat)) return false;
+
+            pathPoints = seat.Points;
+            cumulativeLengths = seat.Lengths;
+            totalPathLength = seat.Total;
+            isLooping = seat.IsLooping;
+            distanceTraveled = seat.Along;
+            isOnTrack = true;
+            if (resetUp) currentUp = Vector3.up;
+
+            ApplyPositionAtDistance(distanceTraveled);
+            return true;
+        }
+
+        /// <summary>シーン内のパーツ(棚のテンプレートと削除済みを除く)のうち、worldPosに一番近い経路を持つものを返す</summary>
+        private static TrackPiece FindNearestPiece(Vector3 worldPos, out float bestDistance)
+        {
+            bestDistance = float.PositiveInfinity;
+            TrackPiece best = null;
+
+            var pieces = FindObjectsByType<TrackPiece>(FindObjectsSortMode.None);
+            foreach (var piece in pieces)
+            {
+                if (piece.IsDeleted) continue;
+                if (piece.GetComponent<PartShelfSlot>() != null) continue;
+
+                var path = piece.GetComponent<TrackPath>();
+                var connectors = piece.GetConnectors();
+                if (path == null || connectors == null || connectors.Length < 2) continue;
+
+                var points = path.GetWorldPathPoints(connectors[0], connectors[1]);
+                float d = DistanceToPolyline(points, worldPos);
+                if (d < bestDistance)
+                {
+                    bestDistance = d;
+                    best = piece;
+                }
+            }
+
+            return best;
+        }
+
+        private static float DistanceToPolyline(List<Vector3> points, Vector3 p)
+        {
+            float best = float.PositiveInfinity;
+            for (int i = 0; i < points.Count - 1; i++)
+            {
+                Vector3 closest = ClosestPointOnSegment(points[i], points[i + 1], p, out _);
+                best = Mathf.Min(best, Vector3.Distance(closest, p));
+            }
+            return best;
+        }
+
+        private static Vector3 ClosestPointOnSegment(Vector3 a, Vector3 b, Vector3 p, out float t)
+        {
+            Vector3 ab = b - a;
+            float sqr = ab.sqrMagnitude;
+            t = sqr > 0.000001f ? Mathf.Clamp01(Vector3.Dot(p - a, ab) / sqr) : 0f;
+            return a + ab * t;
+        }
+
+        /// <summary>経路上でworldPosに一番近い点の「始点からの距離」と、そこでの進行方向を返す</summary>
+        private static float ProjectOntoPath(List<Vector3> points, List<float> lengths, Vector3 p, out Vector3 tangent)
+        {
+            float bestSqr = float.PositiveInfinity;
+            float bestAlong = 0f;
+            tangent = Vector3.forward;
+
+            for (int i = 0; i < points.Count - 1; i++)
+            {
+                Vector3 closest = ClosestPointOnSegment(points[i], points[i + 1], p, out float t);
+                float sqr = (closest - p).sqrMagnitude;
+                if (sqr < bestSqr)
+                {
+                    Vector3 dir = points[i + 1] - points[i];
+                    bestSqr = sqr;
+                    bestAlong = lengths[i] + t * dir.magnitude;
+                    tangent = dir.sqrMagnitude > 0.000001f ? dir.normalized : tangent;
+                }
+            }
+
+            return bestAlong;
+        }
+
+        private static List<float> ComputeCumulativeLengths(List<Vector3> points)
+        {
+            var lengths = new List<float>(points.Count) { 0f };
+            float total = 0f;
+            for (int i = 1; i < points.Count; i++)
+            {
+                total += Vector3.Distance(points[i - 1], points[i]);
+                lengths.Add(total);
+            }
+            return lengths;
+        }
+
+        // ---- 走行 ----
 
         private void Update()
         {
-            if (pathPoints.Count < 2) return;
+            if (isHeld)
+            {
+                UpdatePlacementGhost();
+                return; // 掴んでいる間は経路追従しない
+            }
+            if (!isOnTrack || pathPoints.Count < 2) return;
 
             if (isDerailed)
             {
-                CurrentLapTime += Time.deltaTime; // スピン中もタイムは進む(コースアウトのペナルティとして自然に時間を失う)
-
                 derailSpinElapsed += Time.deltaTime;
                 float progress = derailSpinDuration > 0f ? Mathf.Clamp01(derailSpinElapsed / derailSpinDuration) : 1f;
-                // イーズアウト(最初は勢いよく、だんだん収まる)。progress=1でちょうどderailTotalSpinAngleに到達するため、
-                // 360の倍数で着地するよう回転数を整数にしてあるこの角度は、必ず元の向き(前方)と一致する
+                // イーズアウト(最初は勢いよく、だんだん収まる)。progress=1でちょうどderailTotalSpinAngleに到達する。
+                // 回転数は整数なので、終了時は必ず元の向き(前方)と一致する
                 float eased = 1f - (1f - progress) * (1f - progress);
                 transform.rotation = Quaternion.AngleAxis(eased * derailTotalSpinAngle, derailSpinAxis) * derailStartRotation;
 
@@ -171,7 +405,7 @@ namespace ARSlotcar
                 {
                     Recover();
                 }
-                return; // 復帰待ちの間は通常の走行処理を行わない
+                return; // スピン中は通常の走行処理を行わない
             }
 
             // 加減速: アナログではなく、閾値を境にした二値的な挙動
@@ -182,21 +416,16 @@ namespace ARSlotcar
             currentSpeed = Mathf.Max(currentSpeed, 0f);
 
             distanceTraveled += currentSpeed * Time.deltaTime;
-            CurrentLapTime += Time.deltaTime;
 
             if (distanceTraveled >= totalPathLength)
             {
-                // 1周(または一本道を走破)完了。ベストタイムを更新してから、次のラップの計測に移る
-                if (CurrentLapTime < BestLapTime) BestLapTime = CurrentLapTime;
-                CurrentLapTime = 0f;
-
                 if (isLooping)
                 {
                     distanceTraveled -= totalPathLength; // 周回コースは先頭に戻って継続走行
                 }
                 else
                 {
-                    // 一本道の終端:停止ではなくスタート地点へテレポート
+                    // 一本道の終端:停止ではなく、経路の始点へテレポート
                     distanceTraveled = 0f;
                     currentSpeed = 0f;
                 }
@@ -260,17 +489,14 @@ namespace ARSlotcar
             derailSpinAxis = currentUp.sqrMagnitude > 0.0001f ? currentUp : Vector3.up;
         }
 
-        /// <summary>コースアウトからの復帰: 位置はそのまま(スタートへは戻さない)、速度だけ0から再開する</summary>
+        /// <summary>コースアウトからの復帰: 位置はそのまま、速度だけ0から再開する</summary>
         private void Recover()
         {
             isDerailed = false;
             currentSpeed = 0f;
-            if (pathPoints.Count > 0)
-            {
-                // distanceTraveledは変更しない(コースアウトした場所から再開するため)。
-                // スピン演出で変わった向きを、経路に沿った正しい向きに戻すためだけに呼ぶ。
-                ApplyPositionAtDistance(distanceTraveled);
-            }
+            // distanceTraveledは変更しない(コースアウトした場所から再開するため)。
+            // スピン演出で変わった向きを、経路に沿った正しい向きに戻すためだけに呼ぶ。
+            ApplyPositionAtDistance(distanceTraveled);
         }
 
         /// <summary>指定の弧長位置に車の位置・向きを反映し、使用したセグメント番号を返す</summary>
@@ -290,6 +516,8 @@ namespace ARSlotcar
             transform.position = position;
             if (forward.sqrMagnitude > 0.0001f)
             {
+                travelForward = forward;
+
                 // 前フレームの「上向き」を新しい進行方向に投影して引き継ぐことで、
                 // 毎フレーム独立にワールドの真上から計算し直す場合に起きる急なねじれ・スナップを防ぐ
                 Vector3 projectedUp = Vector3.ProjectOnPlane(currentUp, forward);
@@ -329,11 +557,97 @@ namespace ARSlotcar
 
         private int FindSegmentIndex(float distance)
         {
-            for (int i = 0; i < cumulativeLengths.Count - 1; i++)
+            return FindSegmentIndex(cumulativeLengths, distance);
+        }
+
+        private static int FindSegmentIndex(List<float> lengths, float distance)
+        {
+            for (int i = 0; i < lengths.Count - 1; i++)
             {
-                if (distance <= cumulativeLengths[i + 1]) return i;
+                if (distance <= lengths[i + 1]) return i;
             }
-            return Mathf.Max(0, cumulativeLengths.Count - 2);
+            return Mathf.Max(0, lengths.Count - 2);
+        }
+
+        /// <summary>任意の経路上の、指定した距離での位置と進行方向を返す(車の状態は変更しない)</summary>
+        private static void EvaluatePath(List<Vector3> points, List<float> lengths, float distance,
+            out Vector3 position, out Vector3 forward)
+        {
+            int i = FindSegmentIndex(lengths, distance);
+            Vector3 a = points[i];
+            Vector3 b = points[i + 1];
+            float segLength = lengths[i + 1] - lengths[i];
+            float t = segLength > 0f ? (distance - lengths[i]) / segLength : 0f;
+
+            position = Vector3.Lerp(a, b, t);
+            forward = (b - a).normalized;
+            if (forward.sqrMagnitude < 0.0001f) forward = Vector3.forward;
+        }
+
+        // ---- 置く位置のゴースト ----
+
+        /// <summary>掴んでいる間、離したらどこに載るかを半透明の分身で見せる(載れない場所なら消す)</summary>
+        private void UpdatePlacementGhost()
+        {
+            // 毎フレームだと経路の再計算が重いので、少し間引く
+            previewTimer -= Time.deltaTime;
+            if (previewTimer > 0f) return;
+            previewTimer = 0.03f;
+
+            if (TryComputeSeat(transform.position, transform.forward, out SeatResult seat))
+            {
+                EvaluatePath(seat.Points, seat.Lengths, seat.Along, out Vector3 position, out Vector3 forward);
+
+                Vector3 up = Vector3.ProjectOnPlane(Vector3.up, forward);
+                Quaternion rotation = up.sqrMagnitude > 0.0001f
+                    ? Quaternion.LookRotation(forward, up.normalized)
+                    : Quaternion.LookRotation(forward);
+
+                ShowGhostAt(position, rotation);
+            }
+            else
+            {
+                HideGhost();
+            }
+        }
+
+        private void EnsureGhostCreated()
+        {
+            if (ghost != null) return;
+
+            ghost = Instantiate(gameObject, transform.position, transform.rotation);
+            ghost.name = name + "_Ghost";
+
+            // 見た目だけの分身にする: スクリプト → Rigidbody → Collider の順に全部消す
+            foreach (var behaviour in ghost.GetComponentsInChildren<MonoBehaviour>(true)) Destroy(behaviour);
+            var body = ghost.GetComponent<Rigidbody>();
+            if (body != null) Destroy(body);
+            foreach (var col in ghost.GetComponentsInChildren<Collider>(true)) Destroy(col);
+
+            if (ghostMaterial != null)
+            {
+                foreach (var meshRenderer in ghost.GetComponentsInChildren<Renderer>(true))
+                {
+                    var materials = new Material[meshRenderer.sharedMaterials.Length];
+                    for (int i = 0; i < materials.Length; i++) materials[i] = ghostMaterial;
+                    meshRenderer.sharedMaterials = materials;
+                }
+            }
+
+            ghost.SetActive(false);
+        }
+
+        private void ShowGhostAt(Vector3 position, Quaternion rotation)
+        {
+            EnsureGhostCreated();
+            ghost.SetActive(true);
+            ghost.transform.SetPositionAndRotation(position, rotation);
+        }
+
+        private void HideGhost()
+        {
+            if (ghost != null) ghost.SetActive(false);
+            previewTimer = 0f;
         }
     }
 }

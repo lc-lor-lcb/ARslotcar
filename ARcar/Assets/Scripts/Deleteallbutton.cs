@@ -39,7 +39,7 @@ namespace ARSlotcar
             foreach (var piece in allPieces)
             {
                 if (piece.GetComponent<PartShelfSlot>() != null) continue; // 棚のテンプレートは消さない
-                if (piece.IsStartPiece) continue;                          // スタートピースは消さない
+                piece.PrepareForDeletion();
                 Destroy(piece.gameObject);
             }
         }

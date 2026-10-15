@@ -4,13 +4,16 @@ using UnityEngine;
 namespace ARSlotcar
 {
     /// <summary>
-    /// スタートパーツを起点に、コネクタの接続関係(TrackConnector.ConnectedTo)を辿って
-    /// コース全体の経路をワールド座標の点列として1本に構築する。
+    /// 指定したパーツ(seed)と繋がっているパーツ全体から、コース全体の経路を
+    /// ワールド座標の点列として1本に構築する。スタートパーツは不要。
     ///
-    /// - 行き止まり(次の接続が無い)に着いたら、そこでコース終端として打ち切る
-    ///   (仕様上、車側はここで停止ではなくスタート地点へテレポートする)
-    /// - 周回コース(スタートパーツまで接続が戻ってくる)の場合は、そこで打ち切り、
-    ///   Result.IsLooping を true にして呼び出し側に伝える
+    /// - 繋がっているパーツの塊の中に「まだ何にも繋がっていないコネクタ(行き止まり)」があれば、
+    ///   そこを経路の始点とする(一本道コース)。
+    /// - 行き止まりが無く、全部が輪になっていれば、seedのパーツを起点に1周する経路を作る(周回コース)。
+    /// - 車がどちら向きに走るかはここでは決めない。経路は常に「始点→終点」の順で返し、
+    ///   向きの反転は呼び出し側(CarController)が車の向きを見て行う。
+    ///
+    /// 前提: 1パーツにつきコネクタは2つ(入口と出口)。
     /// </summary>
     public static class CoursePathBuilder
     {
@@ -20,67 +23,103 @@ namespace ARSlotcar
             public bool IsLooping;
         }
 
-        public static Result Build(TrackPiece startPiece)
+        public static Result Build(TrackPiece seed)
         {
             var result = new Result();
+            if (seed == null) return result;
+
+            var group = CollectConnectedGroup(seed);
+
+            // 始点を探す: グループ内で、まだ何にも繋がっていないコネクタを持つパーツ
+            TrackPiece startPiece = null;
+            TrackConnector startEntry = null;
+            foreach (var piece in group)
+            {
+                var connectors = piece.GetConnectors();
+                if (connectors == null) continue;
+                foreach (var c in connectors)
+                {
+                    if (c.IsConnected) continue;
+                    startPiece = piece;
+                    startEntry = c;
+                    break;
+                }
+                if (startPiece != null) break;
+            }
+
+            // 行き止まりが無い = 輪になっている。seedのパーツの1つ目のコネクタを入口として1周する
             if (startPiece == null)
             {
-                Debug.LogWarning("[CoursePathBuilder] スタートパーツが指定されていません。");
-                return result;
+                var connectors = seed.GetConnectors();
+                if (connectors == null || connectors.Length < 2) return result;
+                startPiece = seed;
+                startEntry = connectors[0];
             }
 
-            var startConnectors = startPiece.GetConnectors();
-            if (startPiece.GetComponent<TrackPath>() == null || startConnectors == null || startConnectors.Length < 2)
+            var visited = new HashSet<TrackPiece>();
+            TrackPiece current = startPiece;
+            TrackConnector entry = startEntry;
+
+            while (current != null)
             {
-                Debug.LogWarning("[CoursePathBuilder] スタートパーツにTrackPath、または2つのコネクタが見つかりません。");
-                return result;
-            }
+                if (!visited.Add(current)) break;
 
-            // スタートパーツの2つのコネクタのうち、片方を走行開始点、もう片方を「出口」として扱う。
-            // スタートパーツ自体の向きが、コースを走る進行方向の基準になる。
-            TrackConnector entry = startConnectors[0];
-            TrackConnector exit = startConnectors[1];
-
-            var visitedPieces = new HashSet<TrackPiece> { startPiece };
-
-            AppendPiecePath(startPiece, entry, exit, result.Points);
-
-            TrackConnector current = exit;
-
-            while (current.ConnectedTo != null)
-            {
-                TrackConnector nextEntry = current.ConnectedTo;
-                TrackPiece nextPiece = nextEntry.OwnerPiece;
-
-                if (nextPiece == startPiece)
+                TrackConnector exit = current.GetOtherConnector(entry);
+                var path = current.GetComponent<TrackPath>();
+                if (exit == null || path == null)
                 {
-                    result.IsLooping = true;
-                    break; // スタートパーツまで戻ってきたら周回コースとして終了
-                }
-
-                if (!visitedPieces.Add(nextPiece))
-                {
-                    Debug.LogWarning("[CoursePathBuilder] 同じパーツを2回通過しました。接続関係を確認してください。");
+                    Debug.LogWarning($"[CoursePathBuilder] {current.name} にTrackPath、または対となるコネクタが見つかりません。");
                     break;
                 }
 
-                TrackConnector nextExit = nextPiece.GetOtherConnector(nextEntry);
-                if (nextPiece.GetComponent<TrackPath>() == null || nextExit == null)
+                AppendPiecePath(path, entry, exit, result.Points);
+
+                TrackConnector next = exit.ConnectedTo;
+                if (next == null) break; // 行き止まり
+
+                if (next == startEntry)
                 {
-                    Debug.LogWarning($"[CoursePathBuilder] {nextPiece.name} にTrackPath、または対となるコネクタが見つかりません。");
+                    result.IsLooping = true; // 始点の入口まで戻ってきた = 周回コース
                     break;
                 }
 
-                AppendPiecePath(nextPiece, nextEntry, nextExit, result.Points);
-                current = nextExit;
+                current = next.OwnerPiece;
+                entry = next;
             }
 
             return result;
         }
 
-        private static void AppendPiecePath(TrackPiece piece, TrackConnector from, TrackConnector to, List<Vector3> into)
+        /// <summary>seedから、コネクタの接続を辿って繋がっている全パーツ(seed自身を含む)を集める</summary>
+        private static List<TrackPiece> CollectConnectedGroup(TrackPiece seed)
         {
-            var path = piece.GetComponent<TrackPath>();
+            var group = new List<TrackPiece>();
+            var visited = new HashSet<TrackPiece> { seed };
+            var queue = new Queue<TrackPiece>();
+            queue.Enqueue(seed);
+
+            while (queue.Count > 0)
+            {
+                var current = queue.Dequeue();
+                group.Add(current);
+
+                var connectors = current.GetConnectors();
+                if (connectors == null) continue;
+
+                foreach (var c in connectors)
+                {
+                    if (!c.IsConnected) continue;
+                    var neighbor = c.ConnectedTo.OwnerPiece;
+                    if (neighbor == null || !visited.Add(neighbor)) continue;
+                    queue.Enqueue(neighbor);
+                }
+            }
+
+            return group;
+        }
+
+        private static void AppendPiecePath(TrackPath path, TrackConnector from, TrackConnector to, List<Vector3> into)
+        {
             var points = path.GetWorldPathPoints(from, to);
 
             // 前のパーツの終点=このパーツの始点が重複するため、2パーツ目以降は先頭の1点を飛ばす

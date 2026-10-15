@@ -43,10 +43,8 @@ namespace ARSlotcar
     {
         [SerializeField] private TrackConfig config;
         [SerializeField] private Material ghostMaterial;
-        [Tooltip("コース内に1個限定のスタートパーツかどうか(走行経路の起点として使われる)")]
-        [SerializeField] private bool isStartPiece;
-
-        public bool IsStartPiece => isStartPiece;
+        /// <summary>削除が決まったパーツかどうか(Destroyは次のフレーム末まで反映されないため、その間の誤検知を防ぐ)</summary>
+        public bool IsDeleted { get; private set; }
 
         private Grabbable grabbable;
         private TrackConnector[] connectors;
@@ -108,9 +106,9 @@ namespace ARSlotcar
                     isHeld = false;
                     HideGhost();
 
-                    if (isOverTrash && !isStartPiece)
+                    if (isOverTrash)
                     {
-                        DisconnectAll();
+                        PrepareForDeletion();
                         Destroy(gameObject);
                         return; // このパーツはもう存在しないので、これ以上何もしない
                     }
@@ -125,6 +123,9 @@ namespace ARSlotcar
                         // 位置確定後に「自分の残りのコネクタ」も別の相手と噛み合っていないか再チェックする
                         ConnectRemainingConnectors(candidate.My);
                     }
+
+                    // 接続が変わらなくてもパーツの位置は変わっているので、経路を使う側(車)に知らせる
+                    TrackConnector.NotifyConnectionsChanged();
                     break;
             }
         }
@@ -307,6 +308,13 @@ namespace ARSlotcar
         }
 
         /// <summary>TrashZoneから呼ばれる。現在ゴミ箱エリアに触れているかどうかを記録する</summary>
+        /// <summary>削除する前に呼ぶ: 全接続を解除し、削除済みの印を付ける(経路・車の検索から除外させる)</summary>
+        public void PrepareForDeletion()
+        {
+            IsDeleted = true;
+            DisconnectAll();
+        }
+
         public void MarkOverTrash(bool value)
         {
             isOverTrash = value;
