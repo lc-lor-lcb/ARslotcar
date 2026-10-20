@@ -42,7 +42,12 @@ namespace ARSlotcar
     public class TrackPiece : MonoBehaviour
     {
         [SerializeField] private TrackConfig config;
+        [Tooltip("置ける位置を示す半透明のゴースト用マテリアル。他のパーツと干渉して置けない時は、" +
+                 "このマテリアルを元に自動で作った赤いゴーストになる(別途アセットを用意する必要はない)")]
         [SerializeField] private Material ghostMaterial;
+        /// <summary>このパーツが使っているTrackConfig(車が、パーツと同じ吸着距離を使うために参照する)</summary>
+        public TrackConfig Config => config;
+
         /// <summary>削除が決まったパーツかどうか(Destroyは次のフレーム末まで反映されないため、その間の誤検知を防ぐ)</summary>
         public bool IsDeleted { get; private set; }
 
@@ -51,6 +56,9 @@ namespace ARSlotcar
         private bool isHeld;
         private bool isOverTrash;
         private GameObject ghost;
+        private Renderer[] ghostRenderers;
+        private Material blockedGhostMaterial; // ghostMaterialから実行時に作る赤いコピー
+        private bool ghostIsBlocked;
 
         /// <summary>スナップ候補(自分側のコネクタと、接続先の相手コネクタのペア)</summary>
         private struct SnapCandidate
@@ -91,6 +99,12 @@ namespace ARSlotcar
             grabbable.WhenPointerEventRaised -= HandlePointerEvent;
             isHeld = false;
             HideGhost();
+        }
+
+        private void OnDestroy()
+        {
+            if (ghost != null) Destroy(ghost);
+            if (blockedGhostMaterial != null) Destroy(blockedGhostMaterial);
         }
 
         private void HandlePointerEvent(PointerEvent evt)
@@ -134,10 +148,10 @@ namespace ARSlotcar
         {
             if (!isHeld) return;
 
-            if (TryFindSnapCandidate(out SnapCandidate candidate))
+            if (TryFindPreview(out SnapCandidate candidate, out bool blocked))
             {
                 var (rotation, position) = ComputeSnapPose(candidate.My, candidate.Target);
-                ShowGhostAt(position, rotation);
+                ShowGhostAt(position, rotation, blocked);
             }
             else
             {
@@ -167,13 +181,60 @@ namespace ARSlotcar
         }
 
         /// <summary>
+        /// ゴースト表示用の探索。置ける候補があればそれを返す(blocked=false)。
+        /// 繋がる位置の候補はあるが、どれも他パーツと干渉して置けない場合は、
+        /// 「置こうとしている位置」を赤いゴーストで見せるために、最も近い候補を blocked=true で返す。
+        /// 実際に離した時のスナップ判定には使わない(そちらは TryFindSnapCandidate)。
+        /// </summary>
+        private bool TryFindPreview(out SnapCandidate candidate, out bool blocked)
+        {
+            candidate = default;
+            blocked = false;
+            if (config == null || connectors == null || connectors.Length == 0) return false;
+
+            bool hasBlocked = false;
+            SnapCandidate blockedCandidate = default;
+
+            foreach (var myConnector in connectors)
+            {
+                if (TryFindCandidateFor(myConnector, out TrackConnector best, out TrackConnector blockedTarget))
+                {
+                    candidate = new SnapCandidate { My = myConnector, Target = best };
+                    return true;
+                }
+
+                if (!hasBlocked && blockedTarget != null)
+                {
+                    hasBlocked = true;
+                    blockedCandidate = new SnapCandidate { My = myConnector, Target = blockedTarget };
+                }
+            }
+
+            if (hasBlocked)
+            {
+                candidate = blockedCandidate;
+                blocked = true;
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryFindCandidateFor(TrackConnector myConnector, out TrackConnector best)
+        {
+            return TryFindCandidateFor(myConnector, out best, out _);
+        }
+
+        /// <summary>
         /// 指定した1つの自分のコネクタについて、検知半径内・向きがほぼ逆・同じType・未接続、
         /// という条件を満たす相手コネクタを近い順に集め、実際にそこへスナップした場合に
         /// 他パーツと干渉(めり込み)しないものが見つかるまで順に試す。
+        /// 全候補が干渉して置けなかった場合は、最も近い候補を blockedBest に入れて返す(赤ゴースト表示用)。
         /// </summary>
-        private bool TryFindCandidateFor(TrackConnector myConnector, out TrackConnector best)
+        private bool TryFindCandidateFor(TrackConnector myConnector, out TrackConnector best, out TrackConnector blockedBest)
         {
             best = null;
+            blockedBest = null;
 
             var candidates = new List<TrackConnector>();
             foreach (var other in TrackConnector.All)
@@ -209,6 +270,7 @@ namespace ARSlotcar
             }
 
             // 近い候補は見つかったが、どれも干渉するため接続できなかった
+            blockedBest = candidates[0];
             return false;
         }
 
@@ -352,21 +414,50 @@ namespace ARSlotcar
             foreach (var col in ghost.GetComponentsInChildren<Collider>()) Destroy(col);
             foreach (var conn in ghost.GetComponentsInChildren<TrackConnector>()) Destroy(conn);
 
-            // 半透明マテリアルに差し替え
-            if (ghostMaterial != null)
-            {
-                foreach (var renderer in ghost.GetComponentsInChildren<Renderer>())
-                {
-                    renderer.sharedMaterial = ghostMaterial;
-                }
-            }
+            ghostRenderers = ghost.GetComponentsInChildren<Renderer>(true);
+            ApplyGhostMaterial(false);
 
             ghost.SetActive(false);
         }
 
-        private void ShowGhostAt(Vector3 position, Quaternion rotation)
+        /// <summary>ゴーストのマテリアルを、通常(半透明)か、置けない時(赤)に切り替える</summary>
+        private void ApplyGhostMaterial(bool blocked)
+        {
+            ghostIsBlocked = blocked;
+            if (ghostMaterial == null || ghostRenderers == null) return;
+
+            Material material = blocked ? GetBlockedGhostMaterial() : ghostMaterial;
+            foreach (var meshRenderer in ghostRenderers)
+            {
+                if (meshRenderer == null) continue;
+                var materials = new Material[meshRenderer.sharedMaterials.Length];
+                for (int i = 0; i < materials.Length; i++) materials[i] = material;
+                meshRenderer.sharedMaterials = materials;
+            }
+        }
+
+        /// <summary>通常のゴーストのマテリアルから、色だけ赤くしたコピーを(初回だけ)作って返す</summary>
+        private Material GetBlockedGhostMaterial()
+        {
+            if (blockedGhostMaterial != null) return blockedGhostMaterial;
+
+            blockedGhostMaterial = new Material(ghostMaterial);
+            string colorProperty = blockedGhostMaterial.HasProperty("_BaseColor") ? "_BaseColor"
+                                 : blockedGhostMaterial.HasProperty("_Color") ? "_Color"
+                                 : null;
+            if (colorProperty != null)
+            {
+                float alpha = blockedGhostMaterial.GetColor(colorProperty).a;
+                blockedGhostMaterial.SetColor(colorProperty, new Color(1f, 0.2f, 0.2f, Mathf.Max(alpha, 0.35f)));
+            }
+            return blockedGhostMaterial;
+        }
+
+        private void ShowGhostAt(Vector3 position, Quaternion rotation, bool blocked)
         {
             EnsureGhostCreated();
+            if (blocked != ghostIsBlocked) ApplyGhostMaterial(blocked);
+
             ghost.SetActive(true);
             ghost.transform.SetPositionAndRotation(position, rotation);
         }

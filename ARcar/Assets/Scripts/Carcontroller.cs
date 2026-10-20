@@ -12,8 +12,10 @@ namespace ARSlotcar
     /// 走行は物理演算を使わず、経路上を進んだ距離(弧長)をパラメータとして位置・向きを直接更新する方式。
     ///
     /// 【置き方】
-    /// - 掴んでいる間は経路追従を止める。離した位置がコース上(placeSnapDistance以内)なら吸着し、
-    ///   範囲外なら掴む前の状態(コース上ならその位置、コース外なら元の位置)に戻る。
+    /// - 掴んでいる間は経路追従を止める。離した位置がコース上(パーツと同じ吸着距離以内)なら吸着する。
+    ///   コース外に離した場合は、元の場所には戻さず、その場に置かれたままになる(走行不可・トリガーは無視)。
+    /// - 車はコースとは独立した物体で、コースを動かしても引きずられない。載っていたパーツが
+    ///   離れたら、車はコースから外れてその場に残る(再び載せるには、掴んでコース上に置き直す)。
     /// - 車の前方向(+Z)と経路の進行方向が逆向きなら、経路を反転して車の向きの方向に走らせる。
     ///
     /// 【スロットル入力】
@@ -32,14 +34,35 @@ namespace ARSlotcar
     /// このオブジェクトに「Add Grab Interaction」ウィザードでGrabbable一式(コライダー・Rigidbody含む)を付けておく。
     /// Rigidbodyは Is Kinematic をON、Grabbable の Throw When Unselected はOFFにする。
     ///
-    /// 既知の制限: 車が載っているパーツを掴んで動かした場合、車はその場に残る(一緒には運ばれない)。
+    /// 【行き止まり】
+    /// 繋がっていない端(行き止まり)に着いたら、そこで止まって、トリガーを押しても進まない
+    /// (勢いよくぶつかった場合は、ぶつかった揺れが出る)。コースを繋ぎ足して先に進めるように
+    /// なれば、そのまま走り出せる。輪になっているコースでは、止まらずに周回し続ける。
     /// </summary>
     public class CarController : MonoBehaviour
     {
         [Header("置き方")]
-        [Tooltip("車を離した位置から、この距離(メートル)以内にコースがあれば吸着する。" +
-                 "手で置くので、少し余裕を持たせてある")]
-        [SerializeField] private float placeSnapDistance = 0.2f;
+        [Tooltip("設定すると、パーツと同じ吸着距離(TrackConfigのSnapRadius)を使う。" +
+                 "パーツと車で感応距離を揃えるため、パーツと同じTrackConfigを割り当てる")]
+        [SerializeField] private TrackConfig config;
+        [Tooltip("上のConfigを設定していない場合に使う吸着距離(メートル)。" +
+                 "Configが未設定でも、シーン内のパーツから自動でConfigを探して使う")]
+        [SerializeField] private float placeSnapDistance = 0.08f;
+        [Tooltip("コースの上に載っている車が、載っているパーツから、この距離(メートル)以上離れたら" +
+                 "コースから外れたとみなす。コースを動かしても車が引きずられないようにするための値")]
+        [SerializeField] private float stayOnTrackTolerance = 0.03f;
+
+        [Header("行き止まり")]
+        [Tooltip("行き止まりにこの速度(m/s)以上でぶつかったら、ぶつかった揺れを出す")]
+        [SerializeField] private float deadEndBumpMinSpeed = 0.4f;
+        [Tooltip("ぶつかった揺れの長さ(秒)。揺れの大きさは「警告の揺れ」の設定を使う")]
+        [SerializeField] private float deadEndBumpDuration = 0.25f;
+
+        [Header("リセット(手元に呼び戻す)")]
+        [Tooltip("呼び戻した時に、プレイヤーの前方に出す距離(メートル)。手を伸ばして届く程度")]
+        [SerializeField] private float summonDistance = 0.45f;
+        [Tooltip("呼び戻した時の、目線からの高さ(メートル)。マイナスで目線より下")]
+        [SerializeField] private float summonHeightOffset = -0.35f;
         [Tooltip("掴んでいる間、置かれる位置に出す半透明のゴースト用マテリアル(パーツのゴーストと同じものでOK)")]
         [SerializeField] private Material ghostMaterial;
 
@@ -110,10 +133,8 @@ namespace ARSlotcar
         private GameObject ghost;
         private float previewTimer;
 
-        // 掴む前の状態(コース外に離した時に戻すため)
-        private Vector3 heldStartPosition;
-        private Quaternion heldStartRotation;
-        private bool heldStartWasOnTrack;
+        private float deadEndBumpTimer;
+        private float validateTimer;
 
         // コースアウト
         private bool isDerailed;
@@ -140,10 +161,29 @@ namespace ARSlotcar
             }
         }
 
+        /// <summary>
+        /// パーツと同じ吸着距離。Configが未設定なら、シーン内のパーツが使っているConfigを自動で探して使う
+        /// (シーンに保存済みの古い値が使われて、パーツと感応距離がズレてしまうのを防ぐ)。
+        /// </summary>
+        private float PlaceSnapLimit
+        {
+            get
+            {
+                if (config == null)
+                {
+                    var anyPiece = FindFirstObjectByType<TrackPiece>();
+                    if (anyPiece != null) config = anyPiece.Config;
+                }
+                return config != null ? config.SnapRadius : placeSnapDistance;
+            }
+        }
+
         private void Start()
         {
+            Debug.Log($"[CarController] 吸着距離={PlaceSnapLimit:F3}m ({(config != null ? "TrackConfigのSnapRadiusを使用" : "Place Snap Distanceを使用")})");
+
             // シーン開始時に、すでにコースの上にいる場合は載せておく(コース外なら何もしない)
-            TrySeatOnTrack(transform.position, transform.forward, true);
+            TrySeatOnTrack(transform.position, transform.forward, true, PlaceSnapLimit);
         }
 
         private void OnEnable()
@@ -175,13 +215,10 @@ namespace ARSlotcar
                     if (isHeld) break;
                     isHeld = true;
 
-                    heldStartPosition = transform.position;
-                    heldStartRotation = transform.rotation;
-                    heldStartWasOnTrack = isOnTrack;
-
                     // 掴んだ時点で、走行・コースアウト中の状態は全部キャンセルする
                     isDerailed = false;
                     derailConditionTimer = 0f;
+                    deadEndBumpTimer = 0f;
                     currentSpeed = 0f;
                     break;
 
@@ -190,28 +227,17 @@ namespace ARSlotcar
                     isHeld = false;
                     HideGhost();
 
-                    if (TrySeatOnTrack(transform.position, transform.forward, true))
+                    if (TrySeatOnTrack(transform.position, transform.forward, true, PlaceSnapLimit))
                     {
                         currentSpeed = 0f; // 置いた直後は止まっている
                     }
                     else
                     {
-                        RestoreAfterFailedPlacement();
+                        // コース外に離した: 元の場所には戻さず、その場に置いたままにする(走行不可)
+                        LeaveTrack();
                     }
                     break;
             }
-        }
-
-        /// <summary>コース外に離した場合: 掴む前の状態に戻す</summary>
-        private void RestoreAfterFailedPlacement()
-        {
-            if (heldStartWasOnTrack && TrySeatOnTrack(heldStartPosition, travelForward, true))
-            {
-                return; // 掴む前にいたコース上の位置に戻った
-            }
-
-            isOnTrack = false;
-            transform.SetPositionAndRotation(heldStartPosition, heldStartRotation);
         }
 
         /// <summary>コースが変化した時: 掴まれていなければ、今の位置・進行方向を保ったまま載り直す</summary>
@@ -219,14 +245,38 @@ namespace ARSlotcar
         {
             if (isHeld || !isOnTrack) return;
 
-            if (!TrySeatOnTrack(transform.position, travelForward, false))
+            // 載っているパーツが動かされてコースが変わった場合、車は引きずられない:
+            // 今の位置のすぐそば(stayOnTrackTolerance以内)にコースがあれば載り直し、無ければその場に残る
+            if (!TrySeatOnTrack(transform.position, travelForward, false, stayOnTrackTolerance))
             {
-                // 載っていたコースが無くなった: その場に止まって、置き直されるのを待つ
-                isOnTrack = false;
-                currentSpeed = 0f;
-                isDerailed = false;
-                derailConditionTimer = 0f;
+                LeaveTrack();
             }
+        }
+
+        /// <summary>コースから外れた状態にする: 位置はそのまま、走行・コースアウト・行き止まりの状態を解除する</summary>
+        private void LeaveTrack()
+        {
+            isOnTrack = false;
+            currentSpeed = 0f;
+            isDerailed = false;
+            derailConditionTimer = 0f;
+            deadEndBumpTimer = 0f;
+        }
+
+        /// <summary>
+        /// 車を、今のプレイヤーの目の前(手が届く位置)に呼び戻す。コースからは外れた状態になるので、
+        /// 掴んで好きなコースに置き直す。車の場所が分からなくなった時のリセット用。
+        /// </summary>
+        public void ResetToPlayer()
+        {
+            if (isHeld) return; // 手に持っている最中は何もしない
+            if (!PlayerView.TryGetHead(out Vector3 head, out Vector3 flatForward)) return;
+
+            LeaveTrack();
+            HideGhost();
+
+            Vector3 position = PlayerView.PointInFront(head, flatForward, summonDistance, summonHeightOffset);
+            transform.SetPositionAndRotation(position, Quaternion.LookRotation(flatForward, Vector3.up));
         }
 
         // ---- コースへの吸着 ----
@@ -246,12 +296,12 @@ namespace ARSlotcar
         /// 載せる位置を計算する。facing の向きが経路の進行方向と逆なら、経路を反転して
         /// facing の方向に走る経路にする。状態は一切変更しない(ゴースト表示にも使う)。
         /// </summary>
-        private bool TryComputeSeat(Vector3 worldPos, Vector3 facing, out SeatResult seat)
+        private bool TryComputeSeat(Vector3 worldPos, Vector3 facing, float maxDistance, out SeatResult seat)
         {
             seat = default;
 
             TrackPiece seed = FindNearestPiece(worldPos, out float distance);
-            if (seed == null || distance > placeSnapDistance) return false;
+            if (seed == null || distance > maxDistance) return false;
 
             var result = CoursePathBuilder.Build(seed);
             if (result.Points.Count < 2) return false;
@@ -283,9 +333,9 @@ namespace ARSlotcar
         }
 
         /// <summary>計算した位置に、実際に車を載せる。成功した場合のみ状態を更新する</summary>
-        private bool TrySeatOnTrack(Vector3 worldPos, Vector3 facing, bool resetUp)
+        private bool TrySeatOnTrack(Vector3 worldPos, Vector3 facing, bool resetUp, float maxDistance)
         {
-            if (!TryComputeSeat(worldPos, facing, out SeatResult seat)) return false;
+            if (!TryComputeSeat(worldPos, facing, maxDistance, out SeatResult seat)) return false;
 
             pathPoints = seat.Points;
             cumulativeLengths = seat.Lengths;
@@ -392,6 +442,20 @@ namespace ARSlotcar
             }
             if (!isOnTrack || pathPoints.Count < 2) return;
 
+            // 載っているパーツが動かされて離れていないか、定期的に確認する
+            // (離れていたら、車は引きずられずにコースから外れてその場に残る)
+            validateTimer -= Time.deltaTime;
+            if (validateTimer <= 0f)
+            {
+                validateTimer = 0.25f;
+                FindNearestPiece(transform.position, out float distanceToCourse);
+                if (distanceToCourse > stayOnTrackTolerance)
+                {
+                    LeaveTrack();
+                    return;
+                }
+            }
+
             if (isDerailed)
             {
                 derailSpinElapsed += Time.deltaTime;
@@ -406,6 +470,17 @@ namespace ARSlotcar
                     Recover();
                 }
                 return; // スピン中は通常の走行処理を行わない
+            }
+
+            // 行き止まりで止まっている間: トリガーを押しても進まない。
+            // コースが繋ぎ足されて先に進めるようになれば(経路が組み直されて終端でなくなれば)、また走れる
+            if (!isLooping && distanceTraveled >= totalPathLength - 0.001f)
+            {
+                currentSpeed = 0f;
+                derailConditionTimer = 0f;
+                ApplyPositionAtDistance(distanceTraveled);
+                UpdateDeadEndBump();
+                return;
             }
 
             // 加減速: アナログではなく、閾値を境にした二値的な挙動
@@ -425,8 +500,9 @@ namespace ARSlotcar
                 }
                 else
                 {
-                    // 一本道の終端:停止ではなく、経路の始点へテレポート
-                    distanceTraveled = 0f;
+                    // 行き止まり: 終端で止まる。勢いよくぶつかった場合は、ぶつかった揺れを出す
+                    distanceTraveled = totalPathLength;
+                    if (currentSpeed >= deadEndBumpMinSpeed) deadEndBumpTimer = deadEndBumpDuration;
                     currentSpeed = 0f;
                 }
             }
@@ -457,6 +533,18 @@ namespace ARSlotcar
                 float intensity = derailGracePeriod > 0f ? Mathf.Clamp01(derailConditionTimer / derailGracePeriod) : 1f;
                 ApplyWarningShake(intensity);
             }
+
+            UpdateDeadEndBump();
+        }
+
+        /// <summary>行き止まりにぶつかった時の、短い揺れ(だんだん収まる)</summary>
+        private void UpdateDeadEndBump()
+        {
+            if (deadEndBumpTimer <= 0f) return;
+
+            deadEndBumpTimer -= Time.deltaTime;
+            float intensity = deadEndBumpDuration > 0f ? Mathf.Clamp01(deadEndBumpTimer / deadEndBumpDuration) : 0f;
+            ApplyWarningShake(intensity);
         }
 
         /// <summary>経路に沿った位置・向きに、警告用の揺れ(左右の首振り・傾き・横ブレ)を上乗せする</summary>
@@ -594,7 +682,7 @@ namespace ARSlotcar
             if (previewTimer > 0f) return;
             previewTimer = 0.03f;
 
-            if (TryComputeSeat(transform.position, transform.forward, out SeatResult seat))
+            if (TryComputeSeat(transform.position, transform.forward, PlaceSnapLimit, out SeatResult seat))
             {
                 EvaluatePath(seat.Points, seat.Lengths, seat.Along, out Vector3 position, out Vector3 forward);
 

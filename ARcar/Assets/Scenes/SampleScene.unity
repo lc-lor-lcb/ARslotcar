@@ -797,7 +797,7 @@ Transform:
   m_GameObject: {fileID: 83723926}
   serializedVersion: 2
   m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: 2.5, y: 0, z: 0}
+  m_LocalPosition: {x: -0.5, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
@@ -3382,7 +3382,13 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 44de6072406c23442b0248a39be3fef2, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARSlotcar.CarController
+  config: {fileID: 0}
   placeSnapDistance: 0.2
+  stayOnTrackTolerance: 0.03
+  deadEndBumpMinSpeed: 0.4
+  deadEndBumpDuration: 0.25
+  summonDistance: 0.45
+  summonHeightOffset: -0.35
   ghostMaterial: {fileID: 2100000, guid: 4bcb67f42d4b7404d91c24185e4c24b2, type: 2}
   maxSpeed: 1.5
   acceleration: 2
@@ -3486,6 +3492,53 @@ Rigidbody:
   m_Interpolate: 0
   m_Constraints: 0
   m_CollisionDetection: 0
+--- !u!1 &450518606
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 450518608}
+  - component: {fileID: 450518607}
+  m_Layer: 0
+  m_Name: SummonInput
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &450518607
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 450518606}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 745a00ed34bdc274bb80d8dfaa8153dd, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::ARSlotcar.SummonInput
+  car: {fileID: 446049081}
+  shelfSpawner: {fileID: 1526905040}
+  holdSeconds: 0.5
+--- !u!4 &450518608
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 450518606}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: -0.30273, y: -1.45, z: 7.97494}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &460505688
 GameObject:
   m_ObjectHideFlags: 0
@@ -3665,7 +3718,7 @@ Transform:
   m_GameObject: {fileID: 477448740}
   serializedVersion: 2
   m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: 2, y: 0, z: 0}
+  m_LocalPosition: {x: -0.25, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
@@ -9971,6 +10024,56 @@ Transform:
   m_Children: []
   m_Father: {fileID: 1465879515}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1526905039
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1526905041}
+  - component: {fileID: 1526905040}
+  m_Layer: 0
+  m_Name: SpawnNearPlayer
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1526905040
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1526905039}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 624698e7df4272f43ac099984d557502, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::ARSlotcar.SpawnNearPlayer
+  target: {fileID: 773190230}
+  forwardDistance: 0.8
+  heightOffset: -0.35
+  faceThePlayer: 1
+  bringOnStart: 1
+  startDelay: 1.5
+--- !u!4 &1526905041
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1526905039}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: -0.30273, y: -1.45, z: 7.97494}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1531777905
 GameObject:
   m_ObjectHideFlags: 0
@@ -12586,7 +12689,7 @@ Transform:
   m_GameObject: {fileID: 1880519076}
   serializedVersion: 2
   m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: 1, y: 0, z: 0}
+  m_LocalPosition: {x: 0.25, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
@@ -12966,7 +13069,7 @@ Transform:
   m_GameObject: {fileID: 1933347571}
   serializedVersion: 2
   m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: 1.5, y: 0, z: 0}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
@@ -13174,7 +13277,7 @@ GameObject:
   - component: {fileID: 1964602099}
   - component: {fileID: 1964602098}
   m_Layer: 0
-  m_Name: Gamemanager
+  m_Name: Shelfinventorytoggle
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -14710,3 +14813,5 @@ SceneRoots:
   - {fileID: 1964602099}
   - {fileID: 324216821}
   - {fileID: 1861945849}
+  - {fileID: 1526905041}
+  - {fileID: 450518608}
