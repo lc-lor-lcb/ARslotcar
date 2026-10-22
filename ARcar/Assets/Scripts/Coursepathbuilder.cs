@@ -20,6 +20,8 @@ namespace ARSlotcar
         public class Result
         {
             public List<Vector3> Points = new List<Vector3>();
+            /// <summary>Pointsと同じ個数の、各点でのコース面の上方向(Vector3.zeroは「不明」)</summary>
+            public List<Vector3> Ups = new List<Vector3>();
             public bool IsLooping;
         }
 
@@ -72,7 +74,7 @@ namespace ARSlotcar
                     break;
                 }
 
-                AppendPiecePath(path, entry, exit, result.Points);
+                AppendPiecePath(path, entry, exit, result.Points, result.Ups);
 
                 TrackConnector next = exit.ConnectedTo;
                 if (next == null) break; // 行き止まり
@@ -118,15 +120,17 @@ namespace ARSlotcar
             return group;
         }
 
-        private static void AppendPiecePath(TrackPath path, TrackConnector from, TrackConnector to, List<Vector3> into)
+        private static void AppendPiecePath(TrackPath path, TrackConnector from, TrackConnector to,
+            List<Vector3> intoPoints, List<Vector3> intoUps)
         {
-            var points = path.GetWorldPathPoints(from, to);
+            path.GetWorldPath(from, to, out List<Vector3> points, out List<Vector3> ups);
 
             // 前のパーツの終点=このパーツの始点が重複するため、2パーツ目以降は先頭の1点を飛ばす
-            int startIndex = into.Count > 0 ? 1 : 0;
+            int startIndex = intoPoints.Count > 0 ? 1 : 0;
             for (int i = startIndex; i < points.Count; i++)
             {
-                into.Add(points[i]);
+                intoPoints.Add(points[i]);
+                intoUps.Add(ups[i]);
             }
         }
     }

@@ -10,6 +10,8 @@ namespace ARSlotcar
     /// スタートパーツは不要で、コースを組み替えても車は今の位置に載ったまま、新しい経路に載り直す。
     ///
     /// 走行は物理演算を使わず、経路上を進んだ距離(弧長)をパラメータとして位置・向きを直接更新する方式。
+    /// 車体の向きは、進行方向(坂の前後の傾き)と、コース面の上方向(バンクの左右の傾き)に合わせる。
+    /// コース面の上方向は、各パーツのコネクタのtransform.upから求める(ループなど不明な区間は向きを連続させる)。
     ///
     /// 【置き方】
     /// - 掴んでいる間は経路追従を止める。離した位置がコース上(パーツと同じ吸着距離以内)なら吸着する。
@@ -118,6 +120,7 @@ namespace ARSlotcar
         // 経路
         private List<Vector3> pathPoints = new List<Vector3>();
         private List<float> cumulativeLengths = new List<float>();
+        private List<Vector3> pathUps = new List<Vector3>(); // 各点でのコース面の上方向(zeroは不明)
         private bool isLooping;
         private float totalPathLength;
         private float distanceTraveled;
@@ -285,6 +288,7 @@ namespace ARSlotcar
         private struct SeatResult
         {
             public List<Vector3> Points;
+            public List<Vector3> Ups;
             public List<float> Lengths;
             public float Total;
             public float Along;
@@ -307,6 +311,7 @@ namespace ARSlotcar
             if (result.Points.Count < 2) return false;
 
             List<Vector3> points = result.Points;
+            List<Vector3> ups = result.Ups;
             List<float> lengths = ComputeCumulativeLengths(points);
             float total = lengths[lengths.Count - 1];
             if (total <= 0.0001f) return false;
@@ -317,6 +322,7 @@ namespace ARSlotcar
             if (facing.sqrMagnitude > 0.0001f && Vector3.Dot(facing.normalized, tangent) < 0f)
             {
                 points.Reverse();
+                ups.Reverse(); // 逆向きに走っても、コース面の上方向そのものは変わらない
                 lengths = ComputeCumulativeLengths(points);
                 along = total - along;
             }
@@ -324,6 +330,7 @@ namespace ARSlotcar
             seat = new SeatResult
             {
                 Points = points,
+                Ups = ups,
                 Lengths = lengths,
                 Total = total,
                 Along = Mathf.Clamp(along, 0f, total),
@@ -338,6 +345,7 @@ namespace ARSlotcar
             if (!TryComputeSeat(worldPos, facing, maxDistance, out SeatResult seat)) return false;
 
             pathPoints = seat.Points;
+            pathUps = seat.Ups;
             cumulativeLengths = seat.Lengths;
             totalPathLength = seat.Total;
             isLooping = seat.IsLooping;
@@ -606,16 +614,11 @@ namespace ARSlotcar
             {
                 travelForward = forward;
 
-                // 前フレームの「上向き」を新しい進行方向に投影して引き継ぐことで、
-                // 毎フレーム独立にワールドの真上から計算し直す場合に起きる急なねじれ・スナップを防ぐ
-                Vector3 projectedUp = Vector3.ProjectOnPlane(currentUp, forward);
-                if (projectedUp.sqrMagnitude < 0.0001f)
-                {
-                    // 進行方向が真上/真下に近く、投影が潰れてしまった場合のフォールバック
-                    projectedUp = Vector3.ProjectOnPlane(Vector3.up, forward);
-                    if (projectedUp.sqrMagnitude < 0.0001f) projectedUp = transform.right;
-                }
-                currentUp = projectedUp.normalized;
+                // コース面の上方向が分かる区間(直線・カーブ・坂)では、それに合わせて車体を傾ける
+                // (勾配=前後の傾き、バンク=左右の傾き)。ループなど上方向が不明な区間では、
+                // 前フレームの上方向を引き継いで、急なねじれ・スナップを防ぐ。
+                Vector3 trackUp = InterpolateUp(pathUps, segmentIndex, t);
+                currentUp = ResolveUp(trackUp, currentUp, forward);
 
                 transform.rotation = Quaternion.LookRotation(forward, currentUp);
             }
@@ -657,9 +660,9 @@ namespace ARSlotcar
             return Mathf.Max(0, lengths.Count - 2);
         }
 
-        /// <summary>任意の経路上の、指定した距離での位置と進行方向を返す(車の状態は変更しない)</summary>
-        private static void EvaluatePath(List<Vector3> points, List<float> lengths, float distance,
-            out Vector3 position, out Vector3 forward)
+        /// <summary>任意の経路上の、指定した距離での位置・進行方向・コース面の上方向(不明ならzero)を返す</summary>
+        private static void EvaluatePath(List<Vector3> points, List<Vector3> ups, List<float> lengths, float distance,
+            out Vector3 position, out Vector3 forward, out Vector3 trackUp)
         {
             int i = FindSegmentIndex(lengths, distance);
             Vector3 a = points[i];
@@ -670,6 +673,42 @@ namespace ARSlotcar
             position = Vector3.Lerp(a, b, t);
             forward = (b - a).normalized;
             if (forward.sqrMagnitude < 0.0001f) forward = Vector3.forward;
+            trackUp = InterpolateUp(ups, i, t);
+        }
+
+        /// <summary>セグメントiの両端の上方向を補間して返す。どちらかが不明(zero)なら、不明としてzeroを返す</summary>
+        private static Vector3 InterpolateUp(List<Vector3> ups, int segmentIndex, float t)
+        {
+            if (ups == null || segmentIndex < 0 || segmentIndex + 1 >= ups.Count) return Vector3.zero;
+
+            Vector3 a = ups[segmentIndex];
+            Vector3 b = ups[segmentIndex + 1];
+            if (a.sqrMagnitude < 0.5f || b.sqrMagnitude < 0.5f) return Vector3.zero;
+
+            return Vector3.Slerp(a, b, t);
+        }
+
+        /// <summary>
+        /// 車体の上方向を決める。コース面の上方向(trackUp)が分かっていればそれに合わせ(勾配・バンクに沿う)、
+        /// 不明(zero)なら fallbackReference(前フレームの上方向など)を進行方向に投影して、向きを連続させる。
+        /// 裏返したパーツのように、コース面が下向きの場合でも、車体は上向きのまま走らせる。
+        /// </summary>
+        private static Vector3 ResolveUp(Vector3 trackUp, Vector3 fallbackReference, Vector3 forward)
+        {
+            Vector3 reference = fallbackReference;
+            if (trackUp.sqrMagnitude > 0.5f)
+            {
+                reference = Vector3.Dot(trackUp, Vector3.up) < 0f ? -trackUp : trackUp;
+            }
+
+            Vector3 projected = Vector3.ProjectOnPlane(reference, forward);
+            if (projected.sqrMagnitude < 0.0001f)
+            {
+                // 進行方向が基準とほぼ平行で、投影が潰れてしまった場合のフォールバック
+                projected = Vector3.ProjectOnPlane(Vector3.up, forward);
+                if (projected.sqrMagnitude < 0.0001f) projected = Vector3.Cross(forward, Vector3.right);
+            }
+            return projected.normalized;
         }
 
         // ---- 置く位置のゴースト ----
@@ -684,14 +723,12 @@ namespace ARSlotcar
 
             if (TryComputeSeat(transform.position, transform.forward, PlaceSnapLimit, out SeatResult seat))
             {
-                EvaluatePath(seat.Points, seat.Lengths, seat.Along, out Vector3 position, out Vector3 forward);
+                EvaluatePath(seat.Points, seat.Ups, seat.Lengths, seat.Along,
+                    out Vector3 position, out Vector3 forward, out Vector3 trackUp);
 
-                Vector3 up = Vector3.ProjectOnPlane(Vector3.up, forward);
-                Quaternion rotation = up.sqrMagnitude > 0.0001f
-                    ? Quaternion.LookRotation(forward, up.normalized)
-                    : Quaternion.LookRotation(forward);
-
-                ShowGhostAt(position, rotation);
+                // 実際に載った時と同じ傾き(勾配・バンク)で、ゴーストを表示する
+                Vector3 up = ResolveUp(trackUp, Vector3.up, forward);
+                ShowGhostAt(position, Quaternion.LookRotation(forward, up));
             }
             else
             {
