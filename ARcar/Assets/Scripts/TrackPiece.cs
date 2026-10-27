@@ -55,6 +55,13 @@ namespace ARSlotcar
         private TrackConnector[] connectors;
         private bool isHeld;
         private bool isOverTrash;
+        [Header("振動")]
+        [Tooltip("白いゴースト(置ける位置の表示)が更新されるたびに、掴んでいる方のコントローラーを振動させる強さ(0〜1)。0で無効")]
+        [Range(0f, 1f)]
+        [SerializeField] private float ghostHapticAmplitude = 0.35f;
+
+        private readonly GhostHapticFeedback ghostHaptics = new GhostHapticFeedback();
+
         private GameObject ghost;
         private Renderer[] ghostRenderers;
         private Material blockedGhostMaterial; // ghostMaterialから実行時に作る赤いコピー
@@ -71,6 +78,7 @@ namespace ARSlotcar
         {
             grabbable = GetComponent<Grabbable>();
             connectors = GetComponentsInChildren<TrackConnector>();
+            ghostHaptics.Amplitude = ghostHapticAmplitude;
 
             if (config == null)
             {
@@ -114,6 +122,9 @@ namespace ARSlotcar
                 case PointerEventType.Select:
                     isHeld = true;
                     DisconnectAll(); // 掴んだ時点でコースから切り離す(繋がったまま動かせないように)
+
+                    // 掴んだ操作のIDだけ覚えておく(どちらの手かは、最初の振動の時に調べる)
+                    ghostHaptics.BeginHold(evt.Identifier);
                     break;
 
                 case PointerEventType.Unselect:
@@ -152,6 +163,10 @@ namespace ARSlotcar
             {
                 var (rotation, position) = ComputeSnapPose(candidate.My, candidate.Target);
                 ShowGhostAt(position, rotation, blocked);
+
+                // 白いゴースト(置ける)が更新された時だけ振動させる。赤(置けない)の時は振動させない
+                if (blocked) ghostHaptics.Clear();
+                else ghostHaptics.Notify(position, rotation);
             }
             else
             {
@@ -405,14 +420,14 @@ namespace ARSlotcar
             ghost = Instantiate(gameObject, transform.position, transform.rotation);
             ghost.name = name + "_Ghost";
 
-            // 機能コンポーネントは全部消して、見た目だけの分身にする
-            Destroy(ghost.GetComponent<TrackPiece>());
-            var ghostGrabbable = ghost.GetComponent<Grabbable>();
-            if (ghostGrabbable != null) Destroy(ghostGrabbable);
+            // 見た目だけの分身にする: スクリプト → Rigidbody → Collider の順に全部消す。
+            // 「Add Grab Interaction」ウィザードが子オブジェクトに付けたInteraction SDKの部品(Interactable)も、
+            // 残すと、Colliderを消したあとに再表示するたびにNullReferenceExceptionになるので、
+            // TrackPiece自身・Grabbable・TrackConnectorに限らず、スクリプトは全部消す。
+            foreach (var behaviour in ghost.GetComponentsInChildren<MonoBehaviour>(true)) Destroy(behaviour);
             var ghostRigidbody = ghost.GetComponent<Rigidbody>();
             if (ghostRigidbody != null) Destroy(ghostRigidbody);
-            foreach (var col in ghost.GetComponentsInChildren<Collider>()) Destroy(col);
-            foreach (var conn in ghost.GetComponentsInChildren<TrackConnector>()) Destroy(conn);
+            foreach (var col in ghost.GetComponentsInChildren<Collider>(true)) Destroy(col);
 
             ghostRenderers = ghost.GetComponentsInChildren<Renderer>(true);
             ApplyGhostMaterial(false);
@@ -465,6 +480,7 @@ namespace ARSlotcar
         private void HideGhost()
         {
             if (ghost != null) ghost.SetActive(false);
+            ghostHaptics.Clear();
         }
     }
 }

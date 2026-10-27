@@ -60,6 +60,11 @@ namespace ARSlotcar
         [Tooltip("ぶつかった揺れの長さ(秒)。揺れの大きさは「警告の揺れ」の設定を使う")]
         [SerializeField] private float deadEndBumpDuration = 0.25f;
 
+        [Header("振動")]
+        [Tooltip("置く位置の白いゴーストが更新されるたびに、掴んでいる方のコントローラーを振動させる強さ(0〜1)。0で無効")]
+        [Range(0f, 1f)]
+        [SerializeField] private float ghostHapticAmplitude = 0.35f;
+
         [Header("リセット(手元に呼び戻す)")]
         [Tooltip("呼び戻した時に、プレイヤーの前方に出す距離(メートル)。手を伸ばして届く程度")]
         [SerializeField] private float summonDistance = 0.45f;
@@ -115,6 +120,9 @@ namespace ARSlotcar
         [Range(0f, 1f)]
         public float ThrottleInput;
 
+        /// <summary>現在の速度が最高速度の何割か(0=停止、1=最高速度)。エンジン音などの演出用</summary>
+        public float SpeedRatio => maxSpeed > 0f ? Mathf.Clamp01(currentSpeed / maxSpeed) : 0f;
+
         private Grabbable grabbable;
 
         // 経路
@@ -133,6 +141,7 @@ namespace ARSlotcar
         private float currentSpeed;
 
         // 置く位置のゴースト
+        private readonly GhostHapticFeedback ghostHaptics = new GhostHapticFeedback();
         private GameObject ghost;
         private float previewTimer;
 
@@ -151,6 +160,7 @@ namespace ARSlotcar
         private void Awake()
         {
             grabbable = GetComponent<Grabbable>();
+            ghostHaptics.Amplitude = ghostHapticAmplitude;
             if (grabbable == null)
             {
                 Debug.LogWarning("[CarController] Grabbableが見つかりません。「Add Grab Interaction」ウィザードで車に掴む機能を付けてください。", this);
@@ -217,6 +227,9 @@ namespace ARSlotcar
                 case PointerEventType.Select:
                     if (isHeld) break;
                     isHeld = true;
+
+                    // 掴んだ操作のIDだけ覚えておく(どちらの手かは、最初の振動の時に調べる)
+                    ghostHaptics.BeginHold(evt.Identifier);
 
                     // 掴んだ時点で、走行・コースアウト中の状態は全部キャンセルする
                     isDerailed = false;
@@ -728,7 +741,11 @@ namespace ARSlotcar
 
                 // 実際に載った時と同じ傾き(勾配・バンク)で、ゴーストを表示する
                 Vector3 up = ResolveUp(trackUp, Vector3.up, forward);
-                ShowGhostAt(position, Quaternion.LookRotation(forward, up));
+                Quaternion ghostRotation = Quaternion.LookRotation(forward, up);
+                ShowGhostAt(position, ghostRotation);
+
+                // ゴーストが更新された(位置が動いた)ら、掴んでいる方のコントローラーを短く振動させる
+                ghostHaptics.Notify(position, ghostRotation);
             }
             else
             {
@@ -748,6 +765,7 @@ namespace ARSlotcar
             var body = ghost.GetComponent<Rigidbody>();
             if (body != null) Destroy(body);
             foreach (var col in ghost.GetComponentsInChildren<Collider>(true)) Destroy(col);
+            foreach (var audio in ghost.GetComponentsInChildren<AudioSource>(true)) Destroy(audio);
 
             if (ghostMaterial != null)
             {
@@ -773,6 +791,7 @@ namespace ARSlotcar
         {
             if (ghost != null) ghost.SetActive(false);
             previewTimer = 0f;
+            ghostHaptics.Clear();
         }
     }
 }
