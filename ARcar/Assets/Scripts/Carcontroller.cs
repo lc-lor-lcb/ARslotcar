@@ -123,6 +123,24 @@ namespace ARSlotcar
         /// <summary>現在の速度が最高速度の何割か(0=停止、1=最高速度)。エンジン音などの演出用</summary>
         public float SpeedRatio => maxSpeed > 0f ? Mathf.Clamp01(currentSpeed / maxSpeed) : 0f;
 
+        /// <summary>コースアウト直前の警告の強さ(0=警告なし、1=もうすぐコースアウト)。警告音の音量に使う</summary>
+        public float WarningIntensity =>
+            (isOnTrack && !isHeld && !isDerailed && derailGracePeriod > 0f && derailConditionTimer > 0f)
+                ? Mathf.Clamp01(derailConditionTimer / derailGracePeriod)
+                : 0f;
+
+        /// <summary>スピンの進み具合(0=開始、1=終了)。スピン中でなければ-1。スピン音に使う</summary>
+        public float SpinProgress =>
+            (isDerailed && derailSpinDuration > 0f)
+                ? Mathf.Clamp01(derailSpinElapsed / derailSpinDuration)
+                : -1f;
+
+        /// <summary>車をコースに置いて、載った瞬間に発生する</summary>
+        public event System.Action Seated;
+
+        /// <summary>行き止まりに、一定以上の速度でぶつかった瞬間に発生する</summary>
+        public event System.Action DeadEndBumped;
+
         private Grabbable grabbable;
 
         // 経路
@@ -246,6 +264,7 @@ namespace ARSlotcar
                     if (TrySeatOnTrack(transform.position, transform.forward, true, PlaceSnapLimit))
                     {
                         currentSpeed = 0f; // 置いた直後は止まっている
+                        Seated?.Invoke();
                     }
                     else
                     {
@@ -293,6 +312,7 @@ namespace ARSlotcar
 
             Vector3 position = PlayerView.PointInFront(head, flatForward, summonDistance, summonHeightOffset);
             transform.SetPositionAndRotation(position, Quaternion.LookRotation(flatForward, Vector3.up));
+            SfxLibrary.Summon(position);
         }
 
         // ---- コースへの吸着 ----
@@ -523,7 +543,11 @@ namespace ARSlotcar
                 {
                     // 行き止まり: 終端で止まる。勢いよくぶつかった場合は、ぶつかった揺れを出す
                     distanceTraveled = totalPathLength;
-                    if (currentSpeed >= deadEndBumpMinSpeed) deadEndBumpTimer = deadEndBumpDuration;
+                    if (currentSpeed >= deadEndBumpMinSpeed)
+                    {
+                        deadEndBumpTimer = deadEndBumpDuration;
+                        DeadEndBumped?.Invoke();
+                    }
                     currentSpeed = 0f;
                 }
             }

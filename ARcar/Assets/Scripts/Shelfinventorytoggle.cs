@@ -33,7 +33,11 @@ namespace ARSlotcar
 
             if (OVRInput.GetDown(OVRInput.Button.One) || OVRInput.GetDown(OVRInput.Button.Two))
             {
-                shelfRoot.gameObject.SetActive(!shelfRoot.gameObject.activeSelf);
+                bool willShow = !shelfRoot.gameObject.activeSelf;
+                shelfRoot.gameObject.SetActive(willShow);
+
+                if (willShow) SfxLibrary.ShelfOpen(shelfRoot.position);
+                else SfxLibrary.ShelfClose(shelfRoot.position);
             }
         }
     }

@@ -42,6 +42,8 @@ namespace ARSlotcar
                 piece.PrepareForDeletion();
                 Destroy(piece.gameObject);
             }
+
+            SfxLibrary.DeleteAll(transform.position);
         }
     }
 }

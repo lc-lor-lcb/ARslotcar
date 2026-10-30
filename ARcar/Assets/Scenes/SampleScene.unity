@@ -3352,6 +3352,7 @@ GameObject:
   - component: {fileID: 446049083}
   - component: {fileID: 446049087}
   - component: {fileID: 446049086}
+  - component: {fileID: 446049088}
   m_Layer: 0
   m_Name: car
   m_TagString: Untagged
@@ -3611,6 +3612,29 @@ AudioSource:
     m_PreInfinity: 2
     m_PostInfinity: 2
     m_RotationOrder: 4
+--- !u!114 &446049088
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 446049079}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d7d34ba8f69b38141b0f0b30d569214c, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::CarEffectSounds
+  car: {fileID: 0}
+  seated: {fileID: 0}
+  bump: {fileID: 0}
+  warningLoop: {fileID: 0}
+  skidLoop: {fileID: 0}
+  oneShotVolume: 0.9
+  warningMaxVolume: 0.6
+  skidMaxVolume: 0.7
+  skidPitchStart: 1.6
+  skidPitchEnd: 0.8
+  smoothing: 18
 --- !u!1 &450518606
 GameObject:
   m_ObjectHideFlags: 0
@@ -9141,6 +9165,61 @@ SkinnedMeshRenderer:
     m_Center: {x: 0.008180305, y: -0.0053694975, z: -0.020344593}
     m_Extent: {x: 0.046097822, y: 0.067293465, z: 0.0557265}
   m_DirtyAABB: 0
+--- !u!1 &1375737368
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1375737370}
+  - component: {fileID: 1375737369}
+  m_Layer: 0
+  m_Name: SfxLibrary
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1375737369
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1375737368}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f7b226973c8cd4f4e870a60b78535ad4, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::SfxLibrary
+  snap: {fileID: 0}
+  blocked: {fileID: 0}
+  trash: {fileID: 0}
+  deleteAll: {fileID: 0}
+  shelfOpen: {fileID: 0}
+  shelfClose: {fileID: 0}
+  summon: {fileID: 0}
+  masterVolume: 1
+  pitchJitter: 0.05
+  spatialBlend: 0.9
+  poolSize: 8
+--- !u!4 &1375737370
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1375737368}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: -0.01231, y: -1.45, z: 1.48502}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1384826009
 GameObject:
   m_ObjectHideFlags: 0
@@ -14938,3 +15017,4 @@ SceneRoots:
   - {fileID: 1861945849}
   - {fileID: 1526905041}
   - {fileID: 450518608}
+  - {fileID: 1375737370}

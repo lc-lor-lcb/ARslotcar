@@ -62,6 +62,10 @@ namespace ARSlotcar
 
         private readonly GhostHapticFeedback ghostHaptics = new GhostHapticFeedback();
 
+        // 「置けない」音: 赤いゴーストに切り替わった時に1回だけ鳴らす(白に戻るか、ゴーストが消えるまで再度は鳴らさない)
+        private bool blockedSoundArmed = true;
+        private float lastBlockedSoundTime = -10f;
+
         private GameObject ghost;
         private Renderer[] ghostRenderers;
         private Material blockedGhostMaterial; // ghostMaterialから実行時に作る赤いコピー
@@ -133,6 +137,7 @@ namespace ARSlotcar
 
                     if (isOverTrash)
                     {
+                        SfxLibrary.Trash(transform.position);
                         PrepareForDeletion();
                         Destroy(gameObject);
                         return; // このパーツはもう存在しないので、これ以上何もしない
@@ -142,7 +147,10 @@ namespace ARSlotcar
                     {
                         var (rotation, position) = ComputeSnapPose(candidate.My, candidate.Target);
                         transform.SetPositionAndRotation(position, rotation);
-                        TrackConnector.Connect(candidate.My, candidate.Target);
+                        if (TrackConnector.Connect(candidate.My, candidate.Target))
+                        {
+                            SfxLibrary.Snap(transform.position);
+                        }
 
                         // 直線と直線の間にカーブを挟むなど、両端が同時にハマるケースに対応するため、
                         // 位置確定後に「自分の残りのコネクタ」も別の相手と噛み合っていないか再チェックする
@@ -165,8 +173,21 @@ namespace ARSlotcar
                 ShowGhostAt(position, rotation, blocked);
 
                 // 白いゴースト(置ける)が更新された時だけ振動させる。赤(置けない)の時は振動させない
-                if (blocked) ghostHaptics.Clear();
-                else ghostHaptics.Notify(position, rotation);
+                if (blocked)
+                {
+                    ghostHaptics.Clear();
+                    if (blockedSoundArmed && Time.time - lastBlockedSoundTime > 0.6f)
+                    {
+                        SfxLibrary.Blocked(position);
+                        lastBlockedSoundTime = Time.time;
+                    }
+                    blockedSoundArmed = false;
+                }
+                else
+                {
+                    blockedSoundArmed = true;
+                    ghostHaptics.Notify(position, rotation);
+                }
             }
             else
             {
@@ -481,6 +502,7 @@ namespace ARSlotcar
         {
             if (ghost != null) ghost.SetActive(false);
             ghostHaptics.Clear();
+            blockedSoundArmed = true;
         }
     }
 }
